@@ -423,6 +423,7 @@ def main_keyboard(user_id):
             [{'text': '📤 رفع بوت', 'callback_data': 'upload_bot'}],
             [{'text': '📁 بوتاتي', 'callback_data': 'my_bots'}],
             [{'text': '🎁 مكافأة يومية', 'callback_data': 'daily'}, {'text': '🎊 مكافأة أسبوعية', 'callback_data': 'weekly'}],
+            [{'text': '🔗 رابط الإحالة', 'callback_data': 'referral'}],
             [{'text': '📢 قناة البوت', 'url': settings.get('channel_link', CHANNEL_LINK)}],
             [{'text': '👤 المالك', 'url': f"tg://user?id={ADMIN_ID}"}]
         ]
@@ -685,6 +686,13 @@ def webhook():
             if success:
                 points = get_user_points(user_id)
                 send_message(chat_id, f"🎊 **المكافأة الأسبوعية**\n\n{msg}\n💰 رصيدك الحالي: {points} نقطة", main_keyboard(user_id))
+        
+        elif data == 'referral':
+            bot_info = requests.get(f"https://api.telegram.org/bot{TOKEN}/getMe").json()
+            bot_username = bot_info.get('result', {}).get('username', 'bot')
+            link = f"https://t.me/{bot_username}?start={user_id}"
+            text = f"🔗 **رابط الإحالة الخاص بك**\n\n<code>{link}</code>\n\n💰 كل مستخدم يدخل عبر رابطك يمنحك 10 نقاط!"
+            edit_message(chat_id, message_id, text, back_keyboard('back_main'))
         
         elif data == 'upload_bot':
             allowed, msg = can_upload(user_id)
