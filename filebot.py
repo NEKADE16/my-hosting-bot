@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# بوت استضافة متكامل مع نجوم تيليجرام الحقيقية ونقاط البوت
+# بوت استضافة متكامل - نسخة مستقرة
 # المالك: @h7_4c
 # قناة البوت: @ArabPyDecode
 
@@ -34,6 +34,7 @@ USERS_DB = os.path.join(DB_DIR, 'users.json')
 BOTS_DB = os.path.join(DB_DIR, 'bots.json')
 VIP_DB = os.path.join(DB_DIR, 'vip.json')
 SETTINGS_DB = os.path.join(DB_DIR, 'settings.json')
+PENDING_ADMIN_DB = os.path.join(DB_DIR, 'pending_admin.json')
 
 def load_json(path):
     if os.path.exists(path):
@@ -52,6 +53,8 @@ def init_db():
         save_json(BOTS_DB, {})
     if not os.path.exists(VIP_DB):
         save_json(VIP_DB, {})
+    if not os.path.exists(PENDING_ADMIN_DB):
+        save_json(PENDING_ADMIN_DB, {})
     if not os.path.exists(SETTINGS_DB):
         save_json(SETTINGS_DB, {
             'max_free_bots': 3,
@@ -109,7 +112,6 @@ def remove_vip(user_id):
         return True
     return False
 
-# نظام نقاط البوت
 def get_user_points(user_id):
     users = load_json(USERS_DB)
     return users.get(str(user_id), {}).get('points', 0)
@@ -130,7 +132,6 @@ def remove_points(user_id, points):
     save_json(USERS_DB, users)
     return True
 
-# نظام نجوم تليجرام الحقيقية
 def get_user_telegram_stars(user_id):
     try:
         url = f"https://api.telegram.org/bot{TOKEN}/getUserStars"
@@ -214,7 +215,6 @@ def weekly_reward(user_id):
     last_weekly = user.get('last_weekly')
     today = datetime.now().date().isoformat()
     
-    # حساب الأسبوع الحالي
     current_week = datetime.now().isocalendar()[1]
     last_week = None
     if last_weekly:
@@ -240,13 +240,13 @@ def check_force_subscribe(user_id):
     try:
         url = f"https://api.telegram.org/bot{TOKEN}/getChatMember"
         params = {'chat_id': f"@{FORCE_CHANNEL}", 'user_id': user_id}
-        response = requests.get(url, params=params).json()
+        response = requests.get(url, params=params, timeout=10).json()
         if response.get('ok'):
             status = response['result'].get('status')
             if status in ['member', 'administrator', 'creator']:
                 return True
-    except:
-        pass
+    except Exception as e:
+        print(f"Force subscribe check error: {e}")
     return False
 
 # ================== دوال البوتات ==================
@@ -271,7 +271,6 @@ def start_bot(bot_id):
         return False, "البوت غير موجود"
     
     settings = load_json(SETTINGS_DB)
-    # VIP يعمل بدون خصم نقاط
     if not is_vip(bots[bot_id].get('user_id')):
         user_points = get_user_points(bots[bot_id].get('user_id'))
         price = settings.get('bot_price_per_hour', 1)
@@ -325,7 +324,6 @@ def save_bot_file(file_id, user_id, filename):
     bots = load_json(BOTS_DB)
     settings = load_json(SETTINGS_DB)
     
-    # خصم نقاط الرفع للمستخدم العادي
     if not is_vip(user_id):
         price = settings.get('hosting_price_per_bot', 5)
         if get_user_points(user_id) >= price:
@@ -447,7 +445,6 @@ def admin_keyboard():
     }
 
 def admin_settings_keyboard():
-    settings = load_json(SETTINGS_DB)
     return {
         'inline_keyboard': [
             [{'text': '✏️ اسم البوت', 'callback_data': 'set_bot_name'}],
@@ -497,7 +494,7 @@ def webhook():
         if not check_force_subscribe(user_id) and not is_admin(user_id):
             settings = load_json(SETTINGS_DB)
             text = f"🔔 **اشتراك إجباري**\n\nيرجى الاشتراك في القناة أولاً:\n{settings.get('channel_link', CHANNEL_LINK)}"
-            keyboard = {'inline_keyboard': [[{'text': '📢 اشترك الآن', 'url': settings.get('channel_link', CHANNEL_LINK)}]]}
+            keyboard = {'inline_keyboard': [[{'text': '📢 اشترك الآن', 'url': settings.get('channel_link', CHANNEL_LINK)}], [{'text': '✅ تحقق', 'callback_data': 'force_check'}]]}
             send_message(chat_id, text, keyboard)
             return 'OK', 200
         
@@ -505,6 +502,103 @@ def webhook():
         
         if 'text' in msg:
             text = msg['text']
+            
+            # معالجة إعدادات الأدمن
+            if is_admin(user_id):
+                pending = load_json(PENDING_ADMIN_DB)
+                if str(user_id) in pending:
+                    action = pending[str(user_id)]
+                    
+                    if action.startswith('set_'):
+                        try:
+                            settings = load_json(SETTINGS_DB)
+                            if action == 'set_bot_name':
+                                settings['bot_name'] = text
+                                save_json(SETTINGS_DB, settings)
+                                send_message(chat_id, f"✅ تم تغيير اسم البوت إلى: {text}")
+                            elif action == 'set_max_free_bots':
+                                settings['max_free_bots'] = int(text)
+                                save_json(SETTINGS_DB, settings)
+                                send_message(chat_id, f"✅ تم تغيير حد البوتات المجانية إلى: {text}")
+                            elif action == 'set_daily_points':
+                                settings['daily_points'] = int(text)
+                                save_json(SETTINGS_DB, settings)
+                                send_message(chat_id, f"✅ تم تغيير النقاط اليومية إلى: {text}")
+                            elif action == 'set_weekly_points':
+                                settings['weekly_bonus_points'] = int(text)
+                                save_json(SETTINGS_DB, settings)
+                                send_message(chat_id, f"✅ تم تغيير النقاط الأسبوعية إلى: {text}")
+                            elif action == 'set_hour_price':
+                                settings['bot_price_per_hour'] = int(text)
+                                save_json(SETTINGS_DB, settings)
+                                send_message(chat_id, f"✅ تم تغيير سعر الساعة إلى: {text} نقطة")
+                            elif action == 'set_upload_price':
+                                settings['hosting_price_per_bot'] = int(text)
+                                save_json(SETTINGS_DB, settings)
+                                send_message(chat_id, f"✅ تم تغيير سعر رفع البوت إلى: {text} نقطة")
+                            elif action == 'set_vip_stars_price':
+                                settings['vip_stars_price'] = int(text)
+                                save_json(SETTINGS_DB, settings)
+                                send_message(chat_id, f"✅ تم تغيير سعر VIP إلى: {text} نجمة")
+                            elif action == 'set_vip_duration':
+                                settings['vip_duration_days'] = int(text)
+                                save_json(SETTINGS_DB, settings)
+                                send_message(chat_id, f"✅ تم تغيير مدة VIP إلى: {text} يوم")
+                            
+                            pending.pop(str(user_id))
+                            save_json(PENDING_ADMIN_DB, pending)
+                            
+                        except ValueError:
+                            send_message(chat_id, "❌ الرجاء إرسال رقم صحيح")
+                    
+                    elif action == 'add_points':
+                        parts = text.split()
+                        if len(parts) == 2:
+                            try:
+                                target_id = int(parts[0])
+                                points = int(parts[1])
+                                add_points(target_id, points)
+                                send_message(chat_id, f"✅ تم إضافة {points} نقطة للمستخدم {target_id}")
+                            except:
+                                send_message(chat_id, "❌ ايدي أو رقم غير صحيح")
+                        else:
+                            send_message(chat_id, "❌ استخدم: `ايدي المستخدم عدد النقاط`")
+                        pending.pop(str(user_id))
+                        save_json(PENDING_ADMIN_DB, pending)
+                    
+                    elif action == 'broadcast':
+                        users = load_json(USERS_DB)
+                        success = 0
+                        for uid in users.keys():
+                            try:
+                                send_message(int(uid), text)
+                                success += 1
+                            except:
+                                pass
+                        send_message(chat_id, f"✅ تم الإذاعة\nتم الإرسال لـ {success} مستخدم")
+                        pending.pop(str(user_id))
+                        save_json(PENDING_ADMIN_DB, pending)
+                    
+                    elif action == 'add_vip':
+                        try:
+                            add_vip(int(text), load_json(SETTINGS_DB).get('vip_duration_days', 30))
+                            send_message(chat_id, f"✅ تم ترقية {text} إلى VIP")
+                        except:
+                            send_message(chat_id, "❌ ايدي غير صحيح")
+                        pending.pop(str(user_id))
+                        save_json(PENDING_ADMIN_DB, pending)
+                    
+                    elif action == 'remove_vip':
+                        try:
+                            remove_vip(int(text))
+                            send_message(chat_id, f"✅ تم إزالة VIP من {text}")
+                        except:
+                            send_message(chat_id, "❌ ايدي غير صحيح")
+                        pending.pop(str(user_id))
+                        save_json(PENDING_ADMIN_DB, pending)
+                    
+                    return 'OK', 200
+            
             if text == '/start':
                 settings = load_json(SETTINGS_DB)
                 start_text = f"""🎉 **مرحباً {msg['from'].get('first_name', '')}**
@@ -698,9 +792,15 @@ def webhook():
             edit_message(chat_id, message_id, "👑 **إدارة VIP**", keyboard)
         
         elif data == 'add_vip_admin' and is_admin(user_id):
+            pending = load_json(PENDING_ADMIN_DB)
+            pending[str(user_id)] = 'add_vip'
+            save_json(PENDING_ADMIN_DB, pending)
             edit_message(chat_id, message_id, "➕ **إضافة VIP**\n\nأرسل ايدي المستخدم:", back_keyboard('admin_vip'))
         
         elif data == 'remove_vip_admin' and is_admin(user_id):
+            pending = load_json(PENDING_ADMIN_DB)
+            pending[str(user_id)] = 'remove_vip'
+            save_json(PENDING_ADMIN_DB, pending)
             edit_message(chat_id, message_id, "➖ **إزالة VIP**\n\nأرسل ايدي المستخدم:", back_keyboard('admin_vip'))
         
         elif data == 'list_vip_admin' and is_admin(user_id):
@@ -723,35 +823,64 @@ def webhook():
         elif data == 'admin_settings' and is_admin(user_id):
             edit_message(chat_id, message_id, "⚙️ **إعدادات البوت**\n\nاختر الإعداد الذي تريد تعديله:", admin_settings_keyboard())
         
-        # إعدادات البوت
         elif data == 'set_bot_name' and is_admin(user_id):
+            pending = load_json(PENDING_ADMIN_DB)
+            pending[str(user_id)] = 'set_bot_name'
+            save_json(PENDING_ADMIN_DB, pending)
             edit_message(chat_id, message_id, "✏️ **تغيير اسم البوت**\n\nأرسل الاسم الجديد:", back_keyboard('admin_settings'))
         
         elif data == 'set_max_free_bots' and is_admin(user_id):
+            pending = load_json(PENDING_ADMIN_DB)
+            pending[str(user_id)] = 'set_max_free_bots'
+            save_json(PENDING_ADMIN_DB, pending)
             edit_message(chat_id, message_id, "📁 **تحديد حد البوتات المجانية**\n\nأرسل الرقم (مثال: 3):", back_keyboard('admin_settings'))
         
         elif data == 'set_daily_points' and is_admin(user_id):
+            pending = load_json(PENDING_ADMIN_DB)
+            pending[str(user_id)] = 'set_daily_points'
+            save_json(PENDING_ADMIN_DB, pending)
             edit_message(chat_id, message_id, "💰 **تحديد النقاط اليومية**\n\nأرسل الرقم (مثال: 10):", back_keyboard('admin_settings'))
         
         elif data == 'set_weekly_points' and is_admin(user_id):
+            pending = load_json(PENDING_ADMIN_DB)
+            pending[str(user_id)] = 'set_weekly_points'
+            save_json(PENDING_ADMIN_DB, pending)
             edit_message(chat_id, message_id, "🎊 **تحديد النقاط الأسبوعية**\n\nأرسل الرقم (مثال: 20):", back_keyboard('admin_settings'))
         
         elif data == 'set_hour_price' and is_admin(user_id):
+            pending = load_json(PENDING_ADMIN_DB)
+            pending[str(user_id)] = 'set_hour_price'
+            save_json(PENDING_ADMIN_DB, pending)
             edit_message(chat_id, message_id, "⏱️ **تحديد سعر الساعة**\n\nأرسل الرقم (مثال: 1):", back_keyboard('admin_settings'))
         
         elif data == 'set_upload_price' and is_admin(user_id):
+            pending = load_json(PENDING_ADMIN_DB)
+            pending[str(user_id)] = 'set_upload_price'
+            save_json(PENDING_ADMIN_DB, pending)
             edit_message(chat_id, message_id, "📤 **تحديد سعر رفع البوت**\n\nأرسل الرقم (مثال: 5):", back_keyboard('admin_settings'))
         
         elif data == 'set_vip_stars_price' and is_admin(user_id):
+            pending = load_json(PENDING_ADMIN_DB)
+            pending[str(user_id)] = 'set_vip_stars_price'
+            save_json(PENDING_ADMIN_DB, pending)
             edit_message(chat_id, message_id, "💎 **تحديد سعر VIP بالنجوم**\n\nأرسل الرقم (مثال: 100):", back_keyboard('admin_settings'))
         
         elif data == 'set_vip_duration' and is_admin(user_id):
+            pending = load_json(PENDING_ADMIN_DB)
+            pending[str(user_id)] = 'set_vip_duration'
+            save_json(PENDING_ADMIN_DB, pending)
             edit_message(chat_id, message_id, "⏰ **تحديد مدة VIP بالأيام**\n\nأرسل الرقم (مثال: 30):", back_keyboard('admin_settings'))
         
         elif data == 'add_points_admin' and is_admin(user_id):
+            pending = load_json(PENDING_ADMIN_DB)
+            pending[str(user_id)] = 'add_points'
+            save_json(PENDING_ADMIN_DB, pending)
             edit_message(chat_id, message_id, "💰 **إضافة نقاط**\n\nأرسل (ايدي المستخدم) (عدد النقاط)\nمثال: `8630079643 100`", back_keyboard('admin_panel'))
         
         elif data == 'admin_broadcast' and is_admin(user_id):
+            pending = load_json(PENDING_ADMIN_DB)
+            pending[str(user_id)] = 'broadcast'
+            save_json(PENDING_ADMIN_DB, pending)
             edit_message(chat_id, message_id, "📢 **إذاعة**\n\nأرسل الرسالة:", back_keyboard('admin_panel'))
         
         elif data == 'admin_users' and is_admin(user_id):
@@ -775,126 +904,6 @@ def webhook():
         
         else:
             answer_callback(callback['id'], "⚠️ جاري التطوير", True)
-    
-    return 'OK', 200
-
-# ================== معالجة الرسائل النصية للإعدادات ==================
-@flask_app.route(f'/webhook/{TOKEN}', methods=['POST'])
-def handle_messages():
-    update = request.get_json()
-    if not update:
-        return 'OK', 200
-    
-    if 'message' in update and 'text' in update['message']:
-        msg = update['message']
-        chat_id = msg['chat']['id']
-        user_id = msg['from']['id']
-        text = msg['text']
-        
-        # معالجة إعدادات الأدمن
-        if is_admin(user_id):
-            settings = load_json(SETTINGS_DB)
-            pending_setting = load_json(os.path.join(DB_DIR, 'pending_admin.json'))
-            
-            if pending_setting.get(str(user_id)):
-                action = pending_setting[str(user_id)]
-                try:
-                    value = int(text)
-                    
-                    if action == 'set_bot_name':
-                        settings['bot_name'] = text
-                        save_json(SETTINGS_DB, settings)
-                        send_message(chat_id, f"✅ تم تغيير اسم البوت إلى: {text}")
-                    
-                    elif action == 'set_max_free_bots':
-                        settings['max_free_bots'] = value
-                        save_json(SETTINGS_DB, settings)
-                        send_message(chat_id, f"✅ تم تغيير حد البوتات المجانية إلى: {value}")
-                    
-                    elif action == 'set_daily_points':
-                        settings['daily_points'] = value
-                        save_json(SETTINGS_DB, settings)
-                        send_message(chat_id, f"✅ تم تغيير النقاط اليومية إلى: {value}")
-                    
-                    elif action == 'set_weekly_points':
-                        settings['weekly_bonus_points'] = value
-                        save_json(SETTINGS_DB, settings)
-                        send_message(chat_id, f"✅ تم تغيير النقاط الأسبوعية إلى: {value}")
-                    
-                    elif action == 'set_hour_price':
-                        settings['bot_price_per_hour'] = value
-                        save_json(SETTINGS_DB, settings)
-                        send_message(chat_id, f"✅ تم تغيير سعر الساعة إلى: {value} نقطة")
-                    
-                    elif action == 'set_upload_price':
-                        settings['hosting_price_per_bot'] = value
-                        save_json(SETTINGS_DB, settings)
-                        send_message(chat_id, f"✅ تم تغيير سعر رفع البوت إلى: {value} نقطة")
-                    
-                    elif action == 'set_vip_stars_price':
-                        settings['vip_stars_price'] = value
-                        save_json(SETTINGS_DB, settings)
-                        send_message(chat_id, f"✅ تم تغيير سعر VIP إلى: {value} نجمة")
-                    
-                    elif action == 'set_vip_duration':
-                        settings['vip_duration_days'] = value
-                        save_json(SETTINGS_DB, settings)
-                        send_message(chat_id, f"✅ تم تغيير مدة VIP إلى: {value} يوم")
-                    
-                    elif action == 'add_points':
-                        parts = text.split()
-                        if len(parts) == 2:
-                            target_id = int(parts[0])
-                            points = int(parts[1])
-                            add_points(target_id, points)
-                            send_message(chat_id, f"✅ تم إضافة {points} نقطة للمستخدم {target_id}")
-                        else:
-                            send_message(chat_id, "❌ الصيغة غير صحيحة\nاستخدم: `ايدي المستخدم عدد النقاط`")
-                    
-                    elif action == 'broadcast':
-                        users = load_json(USERS_DB)
-                        success = 0
-                        for uid in users.keys():
-                            try:
-                                send_message(int(uid), text)
-                                success += 1
-                            except:
-                                pass
-                        send_message(chat_id, f"✅ تم الإذاعة\nتم الإرسال لـ {success} مستخدم")
-                    
-                    elif action == 'add_vip':
-                        add_vip(int(text), settings.get('vip_duration_days', 30))
-                        send_message(chat_id, f"✅ تم ترقية {text} إلى VIP")
-                    
-                    elif action == 'remove_vip':
-                        remove_vip(int(text))
-                        send_message(chat_id, f"✅ تم إزالة VIP من {text}")
-                    
-                    # حذف الحالة
-                    pending_setting.pop(str(user_id))
-                    save_json(os.path.join(DB_DIR, 'pending_admin.json'), pending_setting)
-                    
-                except ValueError:
-                    if action in ['set_bot_name', 'broadcast']:
-                        if action == 'set_bot_name':
-                            settings['bot_name'] = text
-                            save_json(SETTINGS_DB, settings)
-                            send_message(chat_id, f"✅ تم تغيير اسم البوت إلى: {text}")
-                        elif action == 'broadcast':
-                            users = load_json(USERS_DB)
-                            success = 0
-                            for uid in users.keys():
-                                try:
-                                    send_message(int(uid), text)
-                                    success += 1
-                                except:
-                                    pass
-                            send_message(chat_id, f"✅ تم الإذاعة\nتم الإرسال لـ {success} مستخدم")
-                        
-                        pending_setting.pop(str(user_id))
-                        save_json(os.path.join(DB_DIR, 'pending_admin.json'), pending_setting)
-                    else:
-                        send_message(chat_id, "❌ الرجاء إرسال رقم صحيح")
     
     return 'OK', 200
 
