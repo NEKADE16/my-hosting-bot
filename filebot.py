@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# بوت استضافة متكامل - نسخة مستقرة
+# بوت استضافة متكامل - قاعدة بيانات داخل مستودع البوت نفسه
 # المالك: @h7_4c
 # قناة البوت: @ArabPyDecode
 
@@ -7,8 +7,10 @@ import os
 import sys
 import json
 import time
+import base64
 import subprocess
 import threading
+import zipfile
 from datetime import datetime, timedelta
 from flask import Flask, request
 import requests
@@ -21,40 +23,133 @@ CHANNEL_LINK = "https://t.me/ArabPyDecode"
 CHANNEL_USERNAME = "ArabPyDecode"
 FORCE_CHANNEL = CHANNEL_USERNAME
 
+# ================== إعداد GitHub ==================
+GITHUB_TOKEN = "ghp_QHPQERbf2MeBu3Hqwi0QNa5k3D4A5i2xKWLO"
+REPO_OWNER = "NEKADE16"
+REPO_NAME = "my-hosting-bot"
+BRANCH = "main"
+DB_FOLDER = "db/"
+
 # ================== إعداد المجلدات ==================
-BOTS_DIR = 'bots'
-LOGS_DIR = 'logs'
-DB_DIR = 'database'
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BOTS_DIR = os.path.join(BASE_DIR, 'bots')
+LOGS_DIR = os.path.join(BASE_DIR, 'logs')
+DB_DIR = os.path.join(BASE_DIR, 'db')
 
 for d in [BOTS_DIR, LOGS_DIR, DB_DIR]:
     os.makedirs(d, exist_ok=True)
 
-# ================== قاعدة البيانات ==================
+# ================== قاعدة البيانات المحلية ==================
 USERS_DB = os.path.join(DB_DIR, 'users.json')
-BOTS_DB = os.path.join(DB_DIR, 'bots.json')
+BOTS_DB_LOCAL = os.path.join(DB_DIR, 'bots.json')
 VIP_DB = os.path.join(DB_DIR, 'vip.json')
 SETTINGS_DB = os.path.join(DB_DIR, 'settings.json')
 PENDING_ADMIN_DB = os.path.join(DB_DIR, 'pending_admin.json')
 
 def load_json(path):
     if os.path.exists(path):
-        with open(path, 'r') as f:
-            return json.load(f)
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {}
     return {}
 
 def save_json(path, data):
-    with open(path, 'w') as f:
-        json.dump(data, f, indent=4)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
 
+# ================== دوال GitHub ==================
+def github_path(filename):
+    return f"{DB_FOLDER}{filename}"
+
+def upload_to_github(filepath, content):
+    """رفع ملف إلى GitHub"""
+    if not GITHUB_TOKEN:
+        return False
+    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{filepath}"
+    headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+    encoded = base64.b64encode(content.encode('utf-8')).decode('utf-8')
+    
+    # محاولة الحصول على SHA إذا الملف موجود
+    response = requests.get(url, headers=headers)
+    sha = response.json().get('sha') if response.status_code == 200 else None
+    
+    data = {"message": f"Update {filepath}", "content": encoded, "branch": BRANCH}
+    if sha:
+        data["sha"] = sha
+    
+    r = requests.put(url, headers=headers, json=data)
+    return r.status_code in [200, 201]
+
+def download_from_github(filepath):
+    """تحميل ملف من GitHub"""
+    if not GITHUB_TOKEN:
+        return None
+    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{filepath}"
+    headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+    
+    response = requests.get(url, headers=headers)
+    if response.status_code == 200:
+        content = base64.b64decode(response.json()['content']).decode('utf-8')
+        return content
+    return None
+
+def sync_all_to_github():
+    """مزامنة كل البيانات إلى GitHub"""
+    files = {
+        'users.json': USERS_DB,
+        'bots.json': BOTS_DB_LOCAL,
+        'vip.json': VIP_DB,
+        'settings.json': SETTINGS_DB
+    }
+    
+    for github_name, local_path in files.items():
+        if os.path.exists(local_path):
+            with open(local_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            upload_to_github(github_path(github_name), content)
+    print("✅ تم رفع البيانات إلى GitHub")
+
+def sync_all_from_github():
+    """تحميل البيانات من GitHub إلى المحلي"""
+    os.makedirs(DB_FOLDER, exist_ok=True)
+    files = {
+        'users.json': USERS_DB,
+        'bots.json': BOTS_DB_LOCAL,
+        'vip.json': VIP_DB,
+        'settings.json': SETTINGS_DB
+    }
+    
+    for github_name, local_path in files.items():
+        content = download_from_github(github_path(github_name))
+        if content:
+            with open(local_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            print(f"✅ تم تحميل {github_name} من GitHub")
+        else:
+            # إنشاء ملف فارغ إذا لم يكن موجوداً
+            if not os.path.exists(local_path):
+                with open(local_path, 'w', encoding='utf-8') as f:
+                    json.dump({}, f, ensure_ascii=False, indent=4)
+                upload_to_github(github_path(github_name), json.dumps({}, ensure_ascii=False, indent=4))
+                print(f"✅ تم إنشاء ملف {github_name} ورفعه إلى GitHub")
+
+def periodic_sync():
+    """مزامنة دورية كل 5 دقائق"""
+    while True:
+        time.sleep(300)  # 5 دقائق
+        try:
+            sync_all_to_github()
+            print("🔄 مزامنة دورية تلقائية مع GitHub")
+        except Exception as e:
+            print(f"⚠️ خطأ في المزامنة الدورية: {e}")
+
+# بدء المزامنة الدورية في خلفية
+threading.Thread(target=periodic_sync, daemon=True).start()
+
+# ================== تهيئة الإعدادات الافتراضية ==================
 def init_db():
-    if not os.path.exists(USERS_DB):
-        save_json(USERS_DB, {})
-    if not os.path.exists(BOTS_DB):
-        save_json(BOTS_DB, {})
-    if not os.path.exists(VIP_DB):
-        save_json(VIP_DB, {})
-    if not os.path.exists(PENDING_ADMIN_DB):
-        save_json(PENDING_ADMIN_DB, {})
     if not os.path.exists(SETTINGS_DB):
         save_json(SETTINGS_DB, {
             'max_free_bots': 3,
@@ -69,8 +164,20 @@ def init_db():
             'channel_link': CHANNEL_LINK,
             'owner': OWNER_USERNAME
         })
+    if not os.path.exists(USERS_DB):
+        save_json(USERS_DB, {})
+    if not os.path.exists(BOTS_DB_LOCAL):
+        save_json(BOTS_DB_LOCAL, {})
+    if not os.path.exists(VIP_DB):
+        save_json(VIP_DB, {})
+    if not os.path.exists(PENDING_ADMIN_DB):
+        save_json(PENDING_ADMIN_DB, {})
 
+# تحميل البيانات من GitHub أولاً
+sync_all_from_github()
 init_db()
+# رفع البيانات بعد التهيئة (للتأكد من وجود الملفات)
+sync_all_to_github()
 
 # ================== دوال مساعدة ==================
 def is_admin(user_id):
@@ -90,8 +197,7 @@ def is_vip(user_id):
         return False
 
 def get_vip_list():
-    vip_data = load_json(VIP_DB)
-    return vip_data
+    return load_json(VIP_DB)
 
 def add_vip(user_id, days=30):
     vip_data = load_json(VIP_DB)
@@ -102,6 +208,7 @@ def add_vip(user_id, days=30):
         'granted_by': 'admin'
     }
     save_json(VIP_DB, vip_data)
+    sync_all_to_github()
     return True
 
 def remove_vip(user_id):
@@ -109,6 +216,7 @@ def remove_vip(user_id):
     if str(user_id) in vip_data:
         del vip_data[str(user_id)]
         save_json(VIP_DB, vip_data)
+        sync_all_to_github()
         return True
     return False
 
@@ -122,6 +230,7 @@ def add_points(user_id, points):
         users[str(user_id)] = {}
     users[str(user_id)]['points'] = users[str(user_id)].get('points', 0) + points
     save_json(USERS_DB, users)
+    sync_all_to_github()
 
 def remove_points(user_id, points):
     users = load_json(USERS_DB)
@@ -130,6 +239,7 @@ def remove_points(user_id, points):
         return False
     users[str(user_id)]['points'] = current - points
     save_json(USERS_DB, users)
+    sync_all_to_github()
     return True
 
 def get_user_telegram_stars(user_id):
@@ -163,7 +273,7 @@ def buy_vip_with_stars(user_id):
     return False, f"❌ رصيدك من النجوم غير كافٍ\nتحتاج {price} نجمة\nرصيدك: {user_stars} نجمة"
 
 def get_user_bots_count(user_id):
-    bots = load_json(BOTS_DB)
+    bots = load_json(BOTS_DB_LOCAL)
     return sum(1 for b in bots.values() if b.get('user_id') == user_id)
 
 def register_user(user_id, username, first_name):
@@ -179,6 +289,7 @@ def register_user(user_id, username, first_name):
             'bots': []
         }
         save_json(USERS_DB, users)
+        sync_all_to_github()
         return True
     return False
 
@@ -207,6 +318,7 @@ def daily_reward(user_id):
     users[str(user_id)]['last_daily'] = today
     users[str(user_id)]['points'] = users[str(user_id)].get('points', 0) + points
     save_json(USERS_DB, users)
+    sync_all_to_github()
     return True, f"✅ حصلت على {points} نقطة"
 
 def weekly_reward(user_id):
@@ -232,6 +344,7 @@ def weekly_reward(user_id):
     users[str(user_id)]['last_weekly'] = today
     users[str(user_id)]['points'] = users[str(user_id)].get('points', 0) + points
     save_json(USERS_DB, users)
+    sync_all_to_github()
     return True, f"✅ حصلت على {points} نقطة (مكافأة أسبوعية)"
 
 def check_force_subscribe(user_id):
@@ -251,7 +364,7 @@ def check_force_subscribe(user_id):
 
 # ================== دوال البوتات ==================
 def stop_bot(bot_id):
-    bots = load_json(BOTS_DB)
+    bots = load_json(BOTS_DB_LOCAL)
     if bot_id not in bots:
         return False
     pid = bots[bot_id].get('pid')
@@ -262,11 +375,12 @@ def stop_bot(bot_id):
             pass
         bots[bot_id]['pid'] = None
         bots[bot_id]['status'] = 'stopped'
-        save_json(BOTS_DB, bots)
+        save_json(BOTS_DB_LOCAL, bots)
+        sync_all_to_github()
     return True
 
 def start_bot(bot_id):
-    bots = load_json(BOTS_DB)
+    bots = load_json(BOTS_DB_LOCAL)
     if bot_id not in bots:
         return False, "البوت غير موجود"
     
@@ -297,7 +411,8 @@ def start_bot(bot_id):
             bots[bot_id]['pid'] = proc.pid
             bots[bot_id]['status'] = 'running'
             bots[bot_id]['started_at'] = datetime.now().isoformat()
-            save_json(BOTS_DB, bots)
+            save_json(BOTS_DB_LOCAL, bots)
+            sync_all_to_github()
             return True, "✅ تم تشغيل البوت"
     except Exception as e:
         return False, f"❌ خطأ: {str(e)}"
@@ -321,7 +436,7 @@ def save_bot_file(file_id, user_id, filename):
     with open(save_path, 'wb') as f:
         f.write(content)
     
-    bots = load_json(BOTS_DB)
+    bots = load_json(BOTS_DB_LOCAL)
     settings = load_json(SETTINGS_DB)
     
     if not is_vip(user_id):
@@ -340,7 +455,8 @@ def save_bot_file(file_id, user_id, filename):
         'status': 'stopped',
         'pid': None
     }
-    save_json(BOTS_DB, bots)
+    save_json(BOTS_DB_LOCAL, bots)
+    sync_all_to_github()
     
     users = load_json(USERS_DB)
     if str(user_id) in users:
@@ -348,6 +464,7 @@ def save_bot_file(file_id, user_id, filename):
             users[str(user_id)]['bots'] = []
         users[str(user_id)]['bots'].append(bot_id)
         save_json(USERS_DB, users)
+        sync_all_to_github()
     
     return bot_id, None
 
@@ -368,17 +485,19 @@ def delete_bot(bot_id):
         os.remove(bot_path)
     if os.path.exists(log_path):
         os.remove(log_path)
-    bots = load_json(BOTS_DB)
+    bots = load_json(BOTS_DB_LOCAL)
     user_id = bots.get(bot_id, {}).get('user_id')
     if bot_id in bots:
         del bots[bot_id]
-        save_json(BOTS_DB, bots)
+        save_json(BOTS_DB_LOCAL, bots)
+        sync_all_to_github()
     if user_id:
         users = load_json(USERS_DB)
         if str(user_id) in users and 'bots' in users[str(user_id)]:
             if bot_id in users[str(user_id)]['bots']:
                 users[str(user_id)]['bots'].remove(bot_id)
             save_json(USERS_DB, users)
+            sync_all_to_github()
     return True
 
 # ================== دوال إرسال الرسائل ==================
@@ -495,7 +614,7 @@ def webhook():
         if not check_force_subscribe(user_id) and not is_admin(user_id):
             settings = load_json(SETTINGS_DB)
             text = f"🔔 **اشتراك إجباري**\n\nيرجى الاشتراك في القناة أولاً:\n{settings.get('channel_link', CHANNEL_LINK)}"
-            keyboard = {'inline_keyboard': [[{'text': '📢 اشترك الآن', 'url': settings.get('channel_link', CHANNEL_LINK)}], [{'text': '✅ تحقق', 'callback_data': 'force_check'}]]}
+            keyboard = {'inline_keyboard': [[{'text': '📢 اشترك الآن', 'url': settings.get('channel_link', CHANNEL_LINK)}]]}
             send_message(chat_id, text, keyboard)
             return 'OK', 200
         
@@ -516,34 +635,42 @@ def webhook():
                             if action == 'set_bot_name':
                                 settings['bot_name'] = text
                                 save_json(SETTINGS_DB, settings)
+                                sync_all_to_github()
                                 send_message(chat_id, f"✅ تم تغيير اسم البوت إلى: {text}")
                             elif action == 'set_max_free_bots':
                                 settings['max_free_bots'] = int(text)
                                 save_json(SETTINGS_DB, settings)
+                                sync_all_to_github()
                                 send_message(chat_id, f"✅ تم تغيير حد البوتات المجانية إلى: {text}")
                             elif action == 'set_daily_points':
                                 settings['daily_points'] = int(text)
                                 save_json(SETTINGS_DB, settings)
+                                sync_all_to_github()
                                 send_message(chat_id, f"✅ تم تغيير النقاط اليومية إلى: {text}")
                             elif action == 'set_weekly_points':
                                 settings['weekly_bonus_points'] = int(text)
                                 save_json(SETTINGS_DB, settings)
+                                sync_all_to_github()
                                 send_message(chat_id, f"✅ تم تغيير النقاط الأسبوعية إلى: {text}")
                             elif action == 'set_hour_price':
                                 settings['bot_price_per_hour'] = int(text)
                                 save_json(SETTINGS_DB, settings)
+                                sync_all_to_github()
                                 send_message(chat_id, f"✅ تم تغيير سعر الساعة إلى: {text} نقطة")
                             elif action == 'set_upload_price':
                                 settings['hosting_price_per_bot'] = int(text)
                                 save_json(SETTINGS_DB, settings)
+                                sync_all_to_github()
                                 send_message(chat_id, f"✅ تم تغيير سعر رفع البوت إلى: {text} نقطة")
                             elif action == 'set_vip_stars_price':
                                 settings['vip_stars_price'] = int(text)
                                 save_json(SETTINGS_DB, settings)
+                                sync_all_to_github()
                                 send_message(chat_id, f"✅ تم تغيير سعر VIP إلى: {text} نجمة")
                             elif action == 'set_vip_duration':
                                 settings['vip_duration_days'] = int(text)
                                 save_json(SETTINGS_DB, settings)
+                                sync_all_to_github()
                                 send_message(chat_id, f"✅ تم تغيير مدة VIP إلى: {text} يوم")
                             
                             pending.pop(str(user_id))
@@ -702,7 +829,7 @@ def webhook():
             edit_message(chat_id, message_id, "📤 **رفع بوت جديد**\n\nأرسل ملف <code>.py</code>", back_keyboard('back_main'))
         
         elif data == 'my_bots':
-            bots = load_json(BOTS_DB)
+            bots = load_json(BOTS_DB_LOCAL)
             user_bots = {bid: b for bid, b in bots.items() if b.get('user_id') == user_id}
             if not user_bots:
                 edit_message(chat_id, message_id, "📁 **لا يوجد لديك بوتات**\n\nاضغط على 'رفع بوت' لرفع أول بوت لك", back_keyboard('back_main'))
@@ -717,7 +844,7 @@ def webhook():
         
         elif data.startswith('bot_'):
             bot_id = data.split('_')[1]
-            bots = load_json(BOTS_DB)
+            bots = load_json(BOTS_DB_LOCAL)
             bot_info = bots.get(bot_id, {})
             is_running = bot_info.get('status') == 'running'
             text = f"""🤖 **{bot_info.get('name', 'بوت')}**
@@ -737,14 +864,14 @@ def webhook():
         
         elif data.startswith('startstop_'):
             bot_id = data.split('_')[1]
-            bots = load_json(BOTS_DB)
+            bots = load_json(BOTS_DB_LOCAL)
             if bots.get(bot_id, {}).get('status') == 'running':
                 stop_bot(bot_id)
                 answer_callback(callback['id'], "✅ تم إيقاف البوت")
             else:
                 success, msg = start_bot(bot_id)
                 answer_callback(callback['id'], msg)
-            bots = load_json(BOTS_DB)
+            bots = load_json(BOTS_DB_LOCAL)
             bot_info = bots.get(bot_id, {})
             is_running = bot_info.get('status') == 'running'
             text = f"""🤖 **{bot_info.get('name', 'بوت')}**
@@ -771,7 +898,7 @@ def webhook():
             bot_id = data.split('_')[1]
             delete_bot(bot_id)
             answer_callback(callback['id'], "✅ تم حذف البوت")
-            bots = load_json(BOTS_DB)
+            bots = load_json(BOTS_DB_LOCAL)
             user_bots = {bid: b for bid, b in bots.items() if b.get('user_id') == user_id}
             if not user_bots:
                 edit_message(chat_id, message_id, "📁 **لا يوجد لديك بوتات**", back_keyboard('back_main'))
@@ -897,7 +1024,7 @@ def webhook():
             edit_message(chat_id, message_id, text, back_keyboard('admin_panel'))
         
         elif data == 'admin_bots' and is_admin(user_id):
-            bots = load_json(BOTS_DB)
+            bots = load_json(BOTS_DB_LOCAL)
             text = f"📁 **جميع البوتات**\n\nالعدد: {len(bots)}"
             edit_message(chat_id, message_id, text, back_keyboard('admin_panel'))
         
@@ -926,7 +1053,7 @@ if __name__ == '__main__':
         print(f"⚠️ خطأ في تعيين Webhook: {e}")
     
     print("=" * 50)
-    print("🚀 بوت الاستضافة مع نظام VIP ونقاط متكامل")
+    print("🚀 بوت الاستضافة مع قاعدة بيانات داخل المستودع")
     print("=" * 50)
     print(f"👑 المالك: {OWNER_USERNAME}")
     print(f"📢 القناة: {CHANNEL_LINK}")
