@@ -1,120 +1,289 @@
 #!/usr/bin/env python3
-# بوت استضافة البوتات - النسخة الكاملة المتكاملة
-# يعمل على Python 3.6+ مع Render.com أو أي استضافة
+# بوت استضافة متكامل مع نجوم تيليجرام الحقيقية ونقاط البوت
+# المالك: @h7_4c
+# قناة البوت: @ArabPyDecode
 
 import os
 import sys
 import json
 import time
-import uuid
-import zipfile
 import subprocess
 import threading
-import shutil
-import re
 from datetime import datetime, timedelta
-from pathlib import Path
-from flask import Flask, request, jsonify
+from flask import Flask, request
 import requests
 
 # ================== التوكن والإعدادات ==================
-# جلب التوكن من متغيرات البيئة (للأمان)
-TOKEN = os.environ.get('BOT_TOKEN', '8697498430:AAGK9WfWUhELT4734I9Q6JjNiGjNsWsz768')
+TOKEN = os.environ.get('BOT_TOKEN', '8560610744:AAG3NdWF1XFacM9CFwrn7pzppO3LXDz_HxA')
 ADMIN_ID = int(os.environ.get('ADMIN_ID', '8630079643'))
-WEBHOOK_URL = os.environ.get('RENDER_EXTERNAL_HOSTNAME', '')
+OWNER_USERNAME = "@h7_4c"
+CHANNEL_LINK = "https://t.me/ArabPyDecode"
+CHANNEL_USERNAME = "ArabPyDecode"
+FORCE_CHANNEL = CHANNEL_USERNAME
 
 # ================== إعداد المجلدات ==================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-BOTS_DIR = os.path.join(BASE_DIR, 'bots')
-LOGS_DIR = os.path.join(BASE_DIR, 'logs')
-DB_DIR = os.path.join(BASE_DIR, 'database')
-TEMP_DIR = os.path.join(BASE_DIR, 'temp')
+BOTS_DIR = 'bots'
+LOGS_DIR = 'logs'
+DB_DIR = 'database'
 
-for d in [BOTS_DIR, LOGS_DIR, DB_DIR, TEMP_DIR]:
+for d in [BOTS_DIR, LOGS_DIR, DB_DIR]:
     os.makedirs(d, exist_ok=True)
 
 # ================== قاعدة البيانات ==================
 USERS_DB = os.path.join(DB_DIR, 'users.json')
 BOTS_DB = os.path.join(DB_DIR, 'bots.json')
-PENDING_DB = os.path.join(DB_DIR, 'pending.json')
+VIP_DB = os.path.join(DB_DIR, 'vip.json')
 SETTINGS_DB = os.path.join(DB_DIR, 'settings.json')
 
-def load_json(path, default=None):
+def load_json(path):
     if os.path.exists(path):
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except:
-            return default if default is not None else {}
-    return default if default is not None else {}
+        with open(path, 'r') as f:
+            return json.load(f)
+    return {}
 
 def save_json(path, data):
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+    with open(path, 'w') as f:
+        json.dump(data, f, indent=4)
 
-# تهيئة قواعد البيانات
-if not os.path.exists(USERS_DB):
-    save_json(USERS_DB, {})
-if not os.path.exists(BOTS_DB):
-    save_json(BOTS_DB, {})
-if not os.path.exists(PENDING_DB):
-    save_json(PENDING_DB, {})
-if not os.path.exists(SETTINGS_DB):
-    save_json(SETTINGS_DB, {
-        'bot_name': 'بوت الاستضافة',
-        'bot_image': None,
-        'channels': [],
-        'auto_approve': True,
-        'points_per_hour': 1
-    })
+def init_db():
+    if not os.path.exists(USERS_DB):
+        save_json(USERS_DB, {})
+    if not os.path.exists(BOTS_DB):
+        save_json(BOTS_DB, {})
+    if not os.path.exists(VIP_DB):
+        save_json(VIP_DB, {})
+    if not os.path.exists(SETTINGS_DB):
+        save_json(SETTINGS_DB, {
+            'max_free_bots': 3,
+            'daily_points': 10,
+            'vip_stars_price': 100,
+            'vip_duration_days': 30,
+            'bot_price_per_hour': 1,
+            'hosting_price_per_bot': 5,
+            'weekly_bonus_points': 20,
+            'bot_name': 'بوت الاستضافة',
+            'force_channel': CHANNEL_USERNAME,
+            'channel_link': CHANNEL_LINK,
+            'owner': OWNER_USERNAME
+        })
+
+init_db()
 
 # ================== دوال مساعدة ==================
 def is_admin(user_id):
-    return user_id == ADMIN_ID or user_id in load_json(USERS_DB).get(str(user_id), {}).get('admins', [])
+    return user_id == ADMIN_ID
 
-def get_user(user_id):
-    users = load_json(USERS_DB)
-    return users.get(str(user_id), {})
+def is_vip(user_id):
+    vip_data = load_json(VIP_DB)
+    user_vip = vip_data.get(str(user_id))
+    if not user_vip:
+        return False
+    expiry = user_vip.get('expiry')
+    if expiry == 'lifetime':
+        return True
+    try:
+        return datetime.now() < datetime.fromisoformat(expiry)
+    except:
+        return False
 
-def save_user(user_id, data):
-    users = load_json(USERS_DB)
-    users[str(user_id)] = data
-    save_json(USERS_DB, users)
+def get_vip_list():
+    vip_data = load_json(VIP_DB)
+    return vip_data
 
-def register_user(user_id, username, first_name):
-    if str(user_id) not in load_json(USERS_DB):
-        save_user(user_id, {
-            'username': username,
-            'first_name': first_name,
-            'join_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            'bots': [],
-            'points': 10,
-            'is_banned': False,
-            'admins': []
-        })
+def add_vip(user_id, days=30):
+    vip_data = load_json(VIP_DB)
+    expiry = (datetime.now() + timedelta(days=days)).isoformat()
+    vip_data[str(user_id)] = {
+        'expiry': expiry,
+        'granted_at': datetime.now().isoformat(),
+        'granted_by': 'admin'
+    }
+    save_json(VIP_DB, vip_data)
+    return True
+
+def remove_vip(user_id):
+    vip_data = load_json(VIP_DB)
+    if str(user_id) in vip_data:
+        del vip_data[str(user_id)]
+        save_json(VIP_DB, vip_data)
         return True
     return False
 
-def get_user_bots(user_id):
-    bots = load_json(BOTS_DB)
-    return {bid: b for bid, b in bots.items() if b.get('user_id') == user_id}
+# نظام نقاط البوت
+def get_user_points(user_id):
+    users = load_json(USERS_DB)
+    return users.get(str(user_id), {}).get('points', 0)
 
-# ================== دوال تشغيل البوتات ==================
+def add_points(user_id, points):
+    users = load_json(USERS_DB)
+    if str(user_id) not in users:
+        users[str(user_id)] = {}
+    users[str(user_id)]['points'] = users[str(user_id)].get('points', 0) + points
+    save_json(USERS_DB, users)
+
+def remove_points(user_id, points):
+    users = load_json(USERS_DB)
+    current = users.get(str(user_id), {}).get('points', 0)
+    if current < points:
+        return False
+    users[str(user_id)]['points'] = current - points
+    save_json(USERS_DB, users)
+    return True
+
+# نظام نجوم تليجرام الحقيقية
+def get_user_telegram_stars(user_id):
+    try:
+        url = f"https://api.telegram.org/bot{TOKEN}/getUserStars"
+        params = {'user_id': user_id}
+        response = requests.get(url, params=params).json()
+        if response.get('ok'):
+            return response.get('result', {}).get('stars', 0)
+    except:
+        pass
+    return 0
+
+def buy_vip_with_stars(user_id):
+    settings = load_json(SETTINGS_DB)
+    price = settings.get('vip_stars_price', 100)
+    user_stars = get_user_telegram_stars(user_id)
+    
+    if user_stars >= price:
+        try:
+            url = f"https://api.telegram.org/bot{TOKEN}/withdrawStars"
+            params = {'user_id': user_id, 'amount': price}
+            response = requests.get(url, params=params).json()
+            if response.get('ok'):
+                add_vip(user_id, settings.get('vip_duration_days', 30))
+                return True, f"✅ تم شراء VIP بنجاح بـ {price} نجمة!"
+            else:
+                return False, f"❌ فشل سحب النجوم: {response.get('description', 'خطأ غير معروف')}"
+        except Exception as e:
+            return False, f"❌ خطأ: {str(e)}"
+    return False, f"❌ رصيدك من النجوم غير كافٍ\nتحتاج {price} نجمة\nرصيدك: {user_stars} نجمة"
+
+def get_user_bots_count(user_id):
+    bots = load_json(BOTS_DB)
+    return sum(1 for b in bots.values() if b.get('user_id') == user_id)
+
+def register_user(user_id, username, first_name):
+    users = load_json(USERS_DB)
+    if str(user_id) not in users:
+        users[str(user_id)] = {
+            'username': username,
+            'first_name': first_name,
+            'join_date': datetime.now().isoformat(),
+            'points': 10,
+            'last_daily': None,
+            'last_weekly': None,
+            'bots': []
+        }
+        save_json(USERS_DB, users)
+        return True
+    return False
+
+def can_upload(user_id):
+    if is_admin(user_id) or is_vip(user_id):
+        return True, None
+    settings = load_json(SETTINGS_DB)
+    max_bots = settings.get('max_free_bots', 3)
+    current_bots = get_user_bots_count(user_id)
+    if current_bots >= max_bots:
+        return False, f"❌ لقد وصلت للحد الأقصى ({max_bots}) من البوتات للمستخدم العادي\n💎 اشترك VIP بـ {settings.get('vip_stars_price', 100)} نجمة لرفع غير محدود"
+    return True, None
+
+def daily_reward(user_id):
+    users = load_json(USERS_DB)
+    user = users.get(str(user_id), {})
+    last_daily = user.get('last_daily')
+    today = datetime.now().date().isoformat()
+    
+    if last_daily == today:
+        return False, "❌ لقد حصلت على مكافأتك اليومية مسبقاً"
+    
+    settings = load_json(SETTINGS_DB)
+    points = settings.get('daily_points', 10)
+    
+    users[str(user_id)]['last_daily'] = today
+    users[str(user_id)]['points'] = users[str(user_id)].get('points', 0) + points
+    save_json(USERS_DB, users)
+    return True, f"✅ حصلت على {points} نقطة"
+
+def weekly_reward(user_id):
+    users = load_json(USERS_DB)
+    user = users.get(str(user_id), {})
+    last_weekly = user.get('last_weekly')
+    today = datetime.now().date().isoformat()
+    
+    # حساب الأسبوع الحالي
+    current_week = datetime.now().isocalendar()[1]
+    last_week = None
+    if last_weekly:
+        try:
+            last_week = datetime.fromisoformat(last_weekly).isocalendar()[1]
+        except:
+            pass
+    
+    if last_week == current_week:
+        return False, "❌ لقد حصلت على مكافأتك الأسبوعية مسبقاً"
+    
+    settings = load_json(SETTINGS_DB)
+    points = settings.get('weekly_bonus_points', 20)
+    
+    users[str(user_id)]['last_weekly'] = today
+    users[str(user_id)]['points'] = users[str(user_id)].get('points', 0) + points
+    save_json(USERS_DB, users)
+    return True, f"✅ حصلت على {points} نقطة (مكافأة أسبوعية)"
+
+def check_force_subscribe(user_id):
+    if not FORCE_CHANNEL:
+        return True
+    try:
+        url = f"https://api.telegram.org/bot{TOKEN}/getChatMember"
+        params = {'chat_id': f"@{FORCE_CHANNEL}", 'user_id': user_id}
+        response = requests.get(url, params=params).json()
+        if response.get('ok'):
+            status = response['result'].get('status')
+            if status in ['member', 'administrator', 'creator']:
+                return True
+    except:
+        pass
+    return False
+
+# ================== دوال البوتات ==================
+def stop_bot(bot_id):
+    bots = load_json(BOTS_DB)
+    if bot_id not in bots:
+        return False
+    pid = bots[bot_id].get('pid')
+    if pid:
+        try:
+            os.kill(pid, 9)
+        except:
+            pass
+        bots[bot_id]['pid'] = None
+        bots[bot_id]['status'] = 'stopped'
+        save_json(BOTS_DB, bots)
+    return True
+
 def start_bot(bot_id):
     bots = load_json(BOTS_DB)
     if bot_id not in bots:
         return False, "البوت غير موجود"
     
-    bot_info = bots[bot_id]
-    bot_path = os.path.join(BOTS_DIR, f"{bot_id}.py")
+    settings = load_json(SETTINGS_DB)
+    # VIP يعمل بدون خصم نقاط
+    if not is_vip(bots[bot_id].get('user_id')):
+        user_points = get_user_points(bots[bot_id].get('user_id'))
+        price = settings.get('bot_price_per_hour', 1)
+        if user_points < price:
+            return False, f"❌ لا يوجد نقاط كافية\n⭐ كل ساعة تشغيل = {price} نقطة\n💎 اشترك VIP لتشغيل بدون خصم"
+        remove_points(bots[bot_id].get('user_id'), price)
     
+    stop_bot(bot_id)
+    bot_path = os.path.join(BOTS_DIR, f"{bot_id}.py")
     if not os.path.exists(bot_path):
         return False, "ملف البوت غير موجود"
     
-    # إيقاف البوت إذا كان يعمل
-    stop_bot(bot_id)
-    
-    # تشغيل البوت
     log_path = os.path.join(LOGS_DIR, f"{bot_id}.log")
     try:
         with open(log_path, 'a', encoding='utf-8') as log:
@@ -128,296 +297,13 @@ def start_bot(bot_id):
             )
             bots[bot_id]['pid'] = proc.pid
             bots[bot_id]['status'] = 'running'
-            bots[bot_id]['started_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            bots[bot_id]['started_at'] = datetime.now().isoformat()
             save_json(BOTS_DB, bots)
-            return True, "تم تشغيل البوت بنجاح"
+            return True, "✅ تم تشغيل البوت"
     except Exception as e:
-        return False, f"خطأ في التشغيل: {str(e)}"
+        return False, f"❌ خطأ: {str(e)}"
 
-def stop_bot(bot_id):
-    bots = load_json(BOTS_DB)
-    if bot_id not in bots:
-        return False
-    
-    pid = bots[bot_id].get('pid')
-    if pid:
-        try:
-            # محاولة إنهاء العملية بلطف أولاً
-            os.kill(pid, 15)
-            time.sleep(1)
-            # ثم بالقوة إذا لزم الأمر
-            os.kill(pid, 9)
-        except:
-            pass
-        bots[bot_id]['pid'] = None
-        bots[bot_id]['status'] = 'stopped'
-        save_json(BOTS_DB, bots)
-    return True
-
-def delete_bot(bot_id):
-    stop_bot(bot_id)
-    
-    # حذف الملفات
-    bot_path = os.path.join(BOTS_DIR, f"{bot_id}.py")
-    log_path = os.path.join(LOGS_DIR, f"{bot_id}.log")
-    
-    if os.path.exists(bot_path):
-        os.remove(bot_path)
-    if os.path.exists(log_path):
-        os.remove(log_path)
-    
-    bots = load_json(BOTS_DB)
-    if bot_id in bots:
-        # حذف من قائمة البوتات عند المستخدم
-        user_id = bots[bot_id].get('user_id')
-        if user_id:
-            user = get_user(user_id)
-            if bot_id in user.get('bots', []):
-                user['bots'].remove(bot_id)
-                save_user(user_id, user)
-        
-        del bots[bot_id]
-        save_json(BOTS_DB, bots)
-    
-    return True
-
-def get_bot_logs(bot_id, lines=50):
-    log_path = os.path.join(LOGS_DIR, f"{bot_id}.log")
-    if os.path.exists(log_path):
-        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
-            all_lines = f.readlines()
-            last_lines = all_lines[-lines:] if len(all_lines) > lines else all_lines
-            return ''.join(last_lines)
-    return "📝 لا توجد سجلات حتى الآن"
-
-# ================== دوال إرسال الرسائل ==================
-def send_message(chat_id, text, reply_markup=None, photo=None):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    data = {
-        'chat_id': chat_id,
-        'text': text,
-        'parse_mode': 'HTML'
-    }
-    if reply_markup:
-        data['reply_markup'] = json.dumps(reply_markup)
-    
-    try:
-        if photo:
-            url = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
-            data['photo'] = photo
-        response = requests.post(url, json=data, timeout=30)
-        return response.json()
-    except Exception as e:
-        print(f"خطأ في الإرسال: {e}")
-        return None
-
-def edit_message(chat_id, message_id, text, reply_markup=None):
-    url = f"https://api.telegram.org/bot{TOKEN}/editMessageText"
-    data = {
-        'chat_id': chat_id,
-        'message_id': message_id,
-        'text': text,
-        'parse_mode': 'HTML'
-    }
-    if reply_markup:
-        data['reply_markup'] = json.dumps(reply_markup)
-    
-    try:
-        response = requests.post(url, json=data, timeout=30)
-        return response.json()
-    except:
-        return None
-
-def answer_callback(callback_id, text, show_alert=False):
-    url = f"https://api.telegram.org/bot{TOKEN}/answerCallbackQuery"
-    data = {
-        'callback_query_id': callback_id,
-        'text': text,
-        'show_alert': show_alert
-    }
-    try:
-        requests.post(url, json=data, timeout=30)
-    except:
-        pass
-
-def send_document(chat_id, file_path, caption=''):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendDocument"
-    with open(file_path, 'rb') as f:
-        files = {'document': f}
-        data = {'chat_id': chat_id, 'caption': caption, 'parse_mode': 'HTML'}
-        try:
-            response = requests.post(url, data=data, files=files, timeout=60)
-            return response.json()
-        except Exception as e:
-            print(f"خطأ في إرسال الملف: {e}")
-            return None
-
-# ================== لوحات المفاتيح ==================
-def main_keyboard(user_id):
-    user = get_user(user_id)
-    points = user.get('points', 0)
-    
-    keyboard = {
-        'inline_keyboard': [
-            [{'text': f'💰 الرصيد: {points} نقطة', 'callback_data': 'balance'}],
-            [{'text': '📤 رفع بوت جديد', 'callback_data': 'upload_bot'}],
-            [{'text': '📁 بوتاتي', 'callback_data': 'my_bots'}],
-            [{'text': '👤 معلومات حسابي', 'callback_data': 'my_info'}],
-            [{'text': '🔗 رابط الإحالة', 'callback_data': 'referral'}]
-        ]
-    }
-    
-    if is_admin(user_id):
-        keyboard['inline_keyboard'].append([{'text': '⚙️ لوحة الإدارة', 'callback_data': 'admin_panel'}])
-    
-    return keyboard
-
-def admin_keyboard():
-    return {
-        'inline_keyboard': [
-            [{'text': '👥 المستخدمين', 'callback_data': 'admin_users'}],
-            [{'text': '📁 جميع البوتات', 'callback_data': 'admin_bots'}],
-            [{'text': '⏳ الطلبات المعلقة', 'callback_data': 'admin_pending'}],
-            [{'text': '📢 إذاعة', 'callback_data': 'admin_broadcast'}],
-            [{'text': '⚙️ الإعدادات', 'callback_data': 'admin_settings'}],
-            [{'text': '🔙 رجوع للرئيسية', 'callback_data': 'back_main'}]
-        ]
-    }
-
-def back_keyboard(callback_data='back_main'):
-    return {'inline_keyboard': [[{'text': '🔙 رجوع', 'callback_data': callback_data}]]}
-
-# ================== دوال عرض البيانات ==================
-def show_my_bots(chat_id, message_id, user_id):
-    bots = get_user_bots(user_id)
-    
-    if not bots:
-        text = "📁 **لا يوجد لديك بوتات بعد**\n\nاضغط على 'رفع بوت جديد' لرفع أول بوت لك"
-        keyboard = back_keyboard('back_main')
-        edit_message(chat_id, message_id, text, keyboard)
-        return
-    
-    keyboard = {'inline_keyboard': []}
-    for bid, b in bots.items():
-        status = "🟢" if b.get('status') == 'running' else "🔴"
-        name = b.get('name', 'بوت')[:25]
-        keyboard['inline_keyboard'].append([{'text': f'{status} {name}', 'callback_data': f'bot_{bid}'}])
-    
-    keyboard['inline_keyboard'].append([{'text': '🔙 رجوع', 'callback_data': 'back_main'}])
-    
-    text = f"📁 **بوتاتي** ({len(bots)})\n\nاختر بوتاً لإدارته:"
-    edit_message(chat_id, message_id, text, keyboard)
-
-def show_bot_panel(chat_id, message_id, user_id, bot_id):
-    bots = load_json(BOTS_DB)
-    bot_info = bots.get(bot_id, {})
-    
-    if bot_info.get('user_id') != user_id and not is_admin(user_id):
-        edit_message(chat_id, message_id, "❌ هذا البوت ليس ملكك")
-        return
-    
-    is_running = bot_info.get('status') == 'running'
-    
-    keyboard = {
-        'inline_keyboard': [
-            [{'text': '⏹️ إيقاف' if is_running else '▶️ تشغيل', 'callback_data': f'startstop_{bot_id}'}],
-            [{'text': '📋 السجلات', 'callback_data': f'logs_{bot_id}'}],
-            [{'text': '📥 تحميل', 'callback_data': f'download_{bot_id}'}],
-            [{'text': '🗑️ حذف', 'callback_data': f'delete_{bot_id}'}],
-            [{'text': '🔙 رجوع', 'callback_data': 'my_bots'}]
-        ]
-    }
-    
-    text = f"""🤖 **{bot_info.get('name', 'بوت')}**
-
-📅 تاريخ الرفع: {bot_info.get('created_at', 'غير معروف')}
-🟢 الحالة: {'يعمل ✅' if is_running else 'متوقف ❌'}
-📁 الملف: {bot_info.get('filename', '')}
-{'🕐 بدء التشغيل: ' + bot_info.get('started_at', '') if is_running else ''}"""
-    
-    edit_message(chat_id, message_id, text, keyboard)
-
-def show_user_info(chat_id, message_id, user_id, target_id=None):
-    if target_id:
-        user = get_user(target_id)
-        if not user:
-            edit_message(chat_id, message_id, "❌ المستخدم غير موجود")
-            return
-    else:
-        user = get_user(user_id)
-        target_id = user_id
-    
-    bots = get_user_bots(target_id)
-    
-    text = f"""👤 **معلومات المستخدم**
-
-🆔 الايدي: <code>{target_id}</code>
-👤 الاسم: {user.get('first_name', '')}
-🔗 المعرف: @{user.get('username', 'لا يوجد')}
-📅 تاريخ التسجيل: {user.get('join_date', '')}
-💰 النقاط: {user.get('points', 0)}
-📁 عدد البوتات: {len(bots)}"""
-    
-    keyboard = back_keyboard('back_main')
-    edit_message(chat_id, message_id, text, keyboard)
-
-def show_admin_users(chat_id, message_id, page=0):
-    users = load_json(USERS_DB)
-    user_list = list(users.items())
-    items_per_page = 8
-    total_pages = (len(user_list) + items_per_page - 1) // items_per_page
-    start = page * items_per_page
-    end = start + items_per_page
-    
-    keyboard = {'inline_keyboard': []}
-    for uid, u in user_list[start:end]:
-        name = u.get('first_name', '?')[:15]
-        keyboard['inline_keyboard'].append([{'text': f'👤 {name}', 'callback_data': f'user_{uid}'}])
-    
-    # أزرار التنقل
-    nav_buttons = []
-    if page > 0:
-        nav_buttons.append({'text': '◀️ السابق', 'callback_data': f'users_page_{page-1}'})
-    if page < total_pages - 1:
-        nav_buttons.append({'text': 'التالي ▶️', 'callback_data': f'users_page_{page+1}'})
-    if nav_buttons:
-        keyboard['inline_keyboard'].append(nav_buttons)
-    
-    keyboard['inline_keyboard'].append([{'text': '🔙 رجوع', 'callback_data': 'admin_panel'}])
-    
-    text = f"👥 **المستخدمين** ({len(user_list)})\n📄 الصفحة {page+1}/{total_pages}"
-    edit_message(chat_id, message_id, text, keyboard)
-
-def show_admin_bots(chat_id, message_id, page=0):
-    bots = load_json(BOTS_DB)
-    bot_list = list(bots.items())
-    items_per_page = 8
-    total_pages = (len(bot_list) + items_per_page - 1) // items_per_page
-    start = page * items_per_page
-    end = start + items_per_page
-    
-    keyboard = {'inline_keyboard': []}
-    for bid, b in bot_list[start:end]:
-        status = "🟢" if b.get('status') == 'running' else "🔴"
-        name = b.get('name', '?')[:20]
-        keyboard['inline_keyboard'].append([{'text': f'{status} {name}', 'callback_data': f'admin_bot_{bid}'}])
-    
-    nav_buttons = []
-    if page > 0:
-        nav_buttons.append({'text': '◀️ السابق', 'callback_data': f'bots_page_{page-1}'})
-    if page < total_pages - 1:
-        nav_buttons.append({'text': 'التالي ▶️', 'callback_data': f'bots_page_{page+1}'})
-    if nav_buttons:
-        keyboard['inline_keyboard'].append(nav_buttons)
-    
-    keyboard['inline_keyboard'].append([{'text': '🔙 رجوع', 'callback_data': 'admin_panel'}])
-    
-    text = f"📁 **جميع البوتات** ({len(bot_list)})\n📄 الصفحة {page+1}/{total_pages}"
-    edit_message(chat_id, message_id, text, keyboard)
-
-# ================== دوال معالجة الملفات ==================
 def save_bot_file(file_id, user_id, filename):
-    # تحميل الملف من تليجرام
     url = f"https://api.telegram.org/bot{TOKEN}/getFile"
     response = requests.get(url, params={'file_id': file_id})
     if response.status_code != 200:
@@ -427,52 +313,173 @@ def save_bot_file(file_id, user_id, filename):
     if not file_path:
         return None
     
-    # تحميل محتوى الملف
     file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_path}"
     content = requests.get(file_url).content
     
-    # إنشاء معرف فريد للبوت
     bot_id = f"bot_{user_id}_{int(time.time())}"
     save_path = os.path.join(BOTS_DIR, f"{bot_id}.py")
     
     with open(save_path, 'wb') as f:
         f.write(content)
     
-    # حفظ المعلومات
     bots = load_json(BOTS_DB)
+    settings = load_json(SETTINGS_DB)
+    
+    # خصم نقاط الرفع للمستخدم العادي
+    if not is_vip(user_id):
+        price = settings.get('hosting_price_per_bot', 5)
+        if get_user_points(user_id) >= price:
+            remove_points(user_id, price)
+        else:
+            os.remove(save_path)
+            return None, f"❌ لا يوجد نقاط كافية\nرفع بوت جديد يحتاج {price} نقطة"
+    
     bots[bot_id] = {
         'user_id': user_id,
         'name': filename.replace('.py', '')[:30],
         'filename': filename,
-        'created_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        'created_at': datetime.now().isoformat(),
         'status': 'stopped',
         'pid': None
     }
     save_json(BOTS_DB, bots)
     
-    # إضافة للقائمة عند المستخدم
-    user = get_user(user_id)
-    user['bots'] = user.get('bots', []) + [bot_id]
-    save_user(user_id, user)
+    users = load_json(USERS_DB)
+    if str(user_id) in users:
+        if 'bots' not in users[str(user_id)]:
+            users[str(user_id)]['bots'] = []
+        users[str(user_id)]['bots'].append(bot_id)
+        save_json(USERS_DB, users)
     
-    # خصم النقاط إذا كان المستخدم ليس أدمن
-    if not is_admin(user_id):
-        points_per_hour = load_json(SETTINGS_DB).get('points_per_hour', 1)
-        user['points'] = user.get('points', 0) - points_per_hour
-        save_user(user_id, user)
-    
-    return bot_id
+    return bot_id, None
 
-# ================== خادم الويب ==================
+def get_bot_logs(bot_id, lines=50):
+    log_path = os.path.join(LOGS_DIR, f"{bot_id}.log")
+    if os.path.exists(log_path):
+        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+            all_lines = f.readlines()
+            last_lines = all_lines[-lines:] if len(all_lines) > lines else all_lines
+            return ''.join(last_lines)
+    return "📝 لا توجد سجلات"
+
+def delete_bot(bot_id):
+    stop_bot(bot_id)
+    bot_path = os.path.join(BOTS_DIR, f"{bot_id}.py")
+    log_path = os.path.join(LOGS_DIR, f"{bot_id}.log")
+    if os.path.exists(bot_path):
+        os.remove(bot_path)
+    if os.path.exists(log_path):
+        os.remove(log_path)
+    bots = load_json(BOTS_DB)
+    user_id = bots.get(bot_id, {}).get('user_id')
+    if bot_id in bots:
+        del bots[bot_id]
+        save_json(BOTS_DB, bots)
+    if user_id:
+        users = load_json(USERS_DB)
+        if str(user_id) in users and 'bots' in users[str(user_id)]:
+            if bot_id in users[str(user_id)]['bots']:
+                users[str(user_id)]['bots'].remove(bot_id)
+            save_json(USERS_DB, users)
+    return True
+
+# ================== دوال إرسال الرسائل ==================
+def send_message(chat_id, text, reply_markup=None):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    data = {'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'}
+    if reply_markup:
+        data['reply_markup'] = json.dumps(reply_markup)
+    try:
+        requests.post(url, json=data, timeout=30)
+    except Exception as e:
+        print(f"خطأ: {e}")
+
+def edit_message(chat_id, message_id, text, reply_markup=None):
+    url = f"https://api.telegram.org/bot{TOKEN}/editMessageText"
+    data = {'chat_id': chat_id, 'message_id': message_id, 'text': text, 'parse_mode': 'HTML'}
+    if reply_markup:
+        data['reply_markup'] = json.dumps(reply_markup)
+    try:
+        requests.post(url, json=data, timeout=30)
+    except:
+        pass
+
+def answer_callback(callback_id, text, show_alert=False):
+    url = f"https://api.telegram.org/bot{TOKEN}/answerCallbackQuery"
+    data = {'callback_query_id': callback_id, 'text': text, 'show_alert': show_alert}
+    try:
+        requests.post(url, json=data, timeout=30)
+    except:
+        pass
+
+# ================== لوحات المفاتيح ==================
+def main_keyboard(user_id):
+    points = get_user_points(user_id)
+    vip_status = "👑 VIP" if is_vip(user_id) else "🆓 عادي"
+    settings = load_json(SETTINGS_DB)
+    
+    keyboard = {
+        'inline_keyboard': [
+            [{'text': f'💰 نقاط البوت: {points}', 'callback_data': 'balance'}],
+            [{'text': f'{vip_status}', 'callback_data': 'vip_info'}],
+            [{'text': '📤 رفع بوت', 'callback_data': 'upload_bot'}],
+            [{'text': '📁 بوتاتي', 'callback_data': 'my_bots'}],
+            [{'text': '🎁 مكافأة يومية', 'callback_data': 'daily'}, {'text': '🎊 مكافأة أسبوعية', 'callback_data': 'weekly'}],
+            [{'text': '📢 قناة البوت', 'url': settings.get('channel_link', CHANNEL_LINK)}],
+            [{'text': '👤 المالك', 'url': f"tg://user?id={ADMIN_ID}"}]
+        ]
+    }
+    if is_admin(user_id):
+        keyboard['inline_keyboard'].append([{'text': '⚙️ لوحة الإدارة', 'callback_data': 'admin_panel'}])
+    return keyboard
+
+def admin_keyboard():
+    return {
+        'inline_keyboard': [
+            [{'text': '👥 المستخدمين', 'callback_data': 'admin_users'}],
+            [{'text': '📁 جميع البوتات', 'callback_data': 'admin_bots'}],
+            [{'text': '👑 إدارة VIP', 'callback_data': 'admin_vip'}],
+            [{'text': '💰 إضافة نقاط', 'callback_data': 'add_points_admin'}],
+            [{'text': '📢 إذاعة', 'callback_data': 'admin_broadcast'}],
+            [{'text': '⚙️ إعدادات البوت', 'callback_data': 'admin_settings'}],
+            [{'text': '🔙 رجوع', 'callback_data': 'back_main'}]
+        ]
+    }
+
+def admin_settings_keyboard():
+    settings = load_json(SETTINGS_DB)
+    return {
+        'inline_keyboard': [
+            [{'text': '✏️ اسم البوت', 'callback_data': 'set_bot_name'}],
+            [{'text': '📁 حد البوتات المجانية', 'callback_data': 'set_max_free_bots'}],
+            [{'text': '💰 النقاط اليومية', 'callback_data': 'set_daily_points'}],
+            [{'text': '🎊 النقاط الأسبوعية', 'callback_data': 'set_weekly_points'}],
+            [{'text': '⏱️ سعر الساعة', 'callback_data': 'set_hour_price'}],
+            [{'text': '📤 سعر رفع البوت', 'callback_data': 'set_upload_price'}],
+            [{'text': '💎 سعر VIP (نجوم)', 'callback_data': 'set_vip_stars_price'}],
+            [{'text': '⏰ مدة VIP (يوم)', 'callback_data': 'set_vip_duration'}],
+            [{'text': '🔙 رجوع', 'callback_data': 'admin_panel'}]
+        ]
+    }
+
+def vip_info_keyboard():
+    settings = load_json(SETTINGS_DB)
+    return {
+        'inline_keyboard': [
+            [{'text': f'💎 شراء VIP بـ {settings.get("vip_stars_price", 100)} نجمة', 'callback_data': 'buy_vip'}],
+            [{'text': '🔙 رجوع', 'callback_data': 'back_main'}]
+        ]
+    }
+
+def back_keyboard(callback_data='back_main'):
+    return {'inline_keyboard': [[{'text': '🔙 رجوع', 'callback_data': callback_data}]]}
+
+# ================== معالجة البوت ==================
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return jsonify({
-        'status': 'running',
-        'bot': 'Hosting Bot',
-        'version': '1.0.0'
-    })
+    return jsonify({'status': 'running', 'bot': 'Hosting Bot', 'owner': OWNER_USERNAME})
 
 @flask_app.route(f'/webhook/{TOKEN}', methods=['POST'])
 def webhook():
@@ -486,292 +493,415 @@ def webhook():
         chat_id = msg['chat']['id']
         user_id = msg['from']['id']
         
-        # تسجيل المستخدم
+        # التحقق من الاشتراك الإجباري
+        if not check_force_subscribe(user_id) and not is_admin(user_id):
+            settings = load_json(SETTINGS_DB)
+            text = f"🔔 **اشتراك إجباري**\n\nيرجى الاشتراك في القناة أولاً:\n{settings.get('channel_link', CHANNEL_LINK)}"
+            keyboard = {'inline_keyboard': [[{'text': '📢 اشترك الآن', 'url': settings.get('channel_link', CHANNEL_LINK)}]]}
+            send_message(chat_id, text, keyboard)
+            return 'OK', 200
+        
         register_user(user_id, msg['from'].get('username'), msg['from'].get('first_name', ''))
         
-        # معالمة النص
         if 'text' in msg:
             text = msg['text']
-            
             if text == '/start':
-                # التحقق من رابط الإحالة
-                if len(text.split()) > 1:
-                    ref_id = text.split()[1]
-                    if ref_id.isdigit() and int(ref_id) != user_id:
-                        referrer = get_user(int(ref_id))
-                        if referrer:
-                            referrer['points'] = referrer.get('points', 0) + 10
-                            save_user(int(ref_id), referrer)
-                            send_message(int(ref_id), f"🎉 حصلت على 10 نقاط من إحالة مستخدم جديد!")
-                
                 settings = load_json(SETTINGS_DB)
-                bot_name = settings.get('bot_name', 'بوت الاستضافة')
-                text = f"""🎉 **مرحباً {msg['from'].get('first_name', '')}**
+                start_text = f"""🎉 **مرحباً {msg['from'].get('first_name', '')}**
 
-🚀 **{bot_name}**
-يمكنك رفع وتشغيل بوتاتك الخاصة بسهولة!
+🤖 **{settings.get('bot_name', 'بوت الاستضافة')}**
+👑 المالك: {settings.get('owner', OWNER_USERNAME)}
+📢 القناة: {settings.get('channel_link', CHANNEL_LINK)}
 
 📌 **المميزات:**
-• رفع ملفات .py وتشغيلها فوراً
-• عرض سجلات البوت
-• إيقاف وتشغيل البوتات
-• نظام نقاط للإحالات
+• رفع وتشغيل البوتات
+• نقاط يومية وأسبوعية مجانية
+• نظام VIP بنجوم تيليجرام
+• اشتراك إجباري للقناة
 
-🔗 **رابط الإحالة الخاص بك:**
-<code>https://t.me/{os.environ.get('BOT_USERNAME', 'bot')}?start={user_id}</code>"""
-                
-                send_message(chat_id, text, main_keyboard(user_id))
-            
-            elif text == '/id':
-                send_message(chat_id, f"🆔 ايديك: <code>{user_id}</code>")
-            
-            elif text == '/admin' and is_admin(user_id):
-                text = "⚙️ **لوحة التحكم**\n\nاختر من القائمة:"
-                send_message(chat_id, text, admin_keyboard())
-        
-        # معالجة الملفات
-        elif 'document' in msg:
-            doc = msg['document']
-            if doc['file_name'].endswith('.py'):
-                # حفظ الملف
-                bot_id = save_bot_file(doc['file_id'], user_id, doc['file_name'])
-                if bot_id:
-                    text = f"✅ **تم رفع البوت بنجاح!**\n\n📁 الاسم: {doc['file_name']}\n🆔 المعرف: <code>{bot_id}</code>\n\nيمكنك تشغيله من قائمة 'بوتاتي'"
-                    send_message(chat_id, text, main_keyboard(user_id))
-                else:
-                    send_message(chat_id, "❌ **خطأ في رفع الملف**\nحاول مرة أخرى", main_keyboard(user_id))
-            else:
-                send_message(chat_id, "❌ **نوع ملف غير مدعوم**\nالرجاء إرسال ملف <code>.py</code> فقط", main_keyboard(user_id))
+💰 **أسعار الاستضافة:**
+• كل ساعة تشغيل = {settings.get('bot_price_per_hour', 1)} نقطة
+• رفع بوت جديد = {settings.get('hosting_price_per_bot', 5)} نقطة
+• رفع غير محدود للـ VIP
+
+💎 **VIP:** {settings.get('vip_stars_price', 100)} نجمة تيليجرام = {settings.get('vip_duration_days', 30)} يوم مميزات غير محدودة"""
+                send_message(chat_id, start_text, main_keyboard(user_id))
     
     # معالجة الأزرار
     elif 'callback_query' in update:
         callback = update['callback_query']
-        callback_id = callback['id']
         user_id = callback['from']['id']
         message = callback['message']
         chat_id = message['chat']['id']
         message_id = message['message_id']
         data = callback['data']
         
-        # تسجيل المستخدم
         register_user(user_id, callback['from'].get('username'), callback['from'].get('first_name', ''))
         
-        # معالجة البيانات
+        if not check_force_subscribe(user_id) and not is_admin(user_id) and data != 'force_check':
+            settings = load_json(SETTINGS_DB)
+            text = f"🔔 **اشتراك إجباري**\n\nيرجى الاشتراك في القناة أولاً:\n{settings.get('channel_link', CHANNEL_LINK)}"
+            keyboard = {'inline_keyboard': [[{'text': '📢 اشترك الآن', 'url': settings.get('channel_link', CHANNEL_LINK)}], [{'text': '✅ تحقق', 'callback_data': 'force_check'}]]}
+            edit_message(chat_id, message_id, text, keyboard)
+            return 'OK', 200
+        
         if data == 'back_main':
             send_message(chat_id, "🏠 **القائمة الرئيسية**", main_keyboard(user_id))
-            try:
-                requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteMessage?chat_id={chat_id}&message_id={message_id}")
-            except:
-                pass
         
         elif data == 'balance':
-            user = get_user(user_id)
-            answer_callback(callback_id, f"💰 رصيدك: {user.get('points', 0)} نقطة", True)
+            points = get_user_points(user_id)
+            answer_callback(callback['id'], f"💰 نقاط البوت: {points}\n⭐ كل نقطة = ساعة تشغيل", True)
         
-        elif data == 'my_info':
-            show_user_info(chat_id, message_id, user_id)
+        elif data == 'vip_info':
+            if is_vip(user_id):
+                vip_data = load_json(VIP_DB).get(str(user_id), {})
+                expiry = vip_data.get('expiry', 'غير معروف')
+                if expiry != 'lifetime':
+                    try:
+                        exp_date = datetime.fromisoformat(expiry)
+                        days_left = (exp_date - datetime.now()).days
+                        expiry = f"{days_left} يوم متبقي"
+                    except:
+                        pass
+                text = f"👑 **أنت مشترك VIP**\n\n⏰ الصلاحية: {expiry}\n✨ مميزات VIP:\n• رفع غير محدود للبوتات\n• تشغيل بدون خصم نقاط\n• أيقونة VIP\n• دعم أولوية"
+            else:
+                settings = load_json(SETTINGS_DB)
+                text = f"💎 **نظام VIP**\n\nالسعر: {settings.get('vip_stars_price', 100)} نجمة تيليجرام\nالمدة: {settings.get('vip_duration_days', 30)} يوم\n\n✨ **المميزات:**\n• رفع غير محدود للبوتات\n• تشغيل بدون خصم نقاط\n• أيقونة VIP\n• دعم أولوية\n• حد أعلى للبوتات"
+            edit_message(chat_id, message_id, text, vip_info_keyboard())
         
-        elif data == 'referral':
-            bot_info = requests.get(f"https://api.telegram.org/bot{TOKEN}/getMe").json()
-            bot_username = bot_info.get('result', {}).get('username', 'bot')
-            link = f"https://t.me/{bot_username}?start={user_id}"
-            text = f"🔗 **رابط الإحالة الخاص بك**\n\n<code>{link}</code>\n\n💰 كل مستخدم يدخل عبر رابطك يمنحك 10 نقاط!"
-            edit_message(chat_id, message_id, text, back_keyboard('back_main'))
+        elif data == 'buy_vip':
+            if is_vip(user_id):
+                answer_callback(callback['id'], "❌ أنت بالفعل مشترك VIP", True)
+                return
+            success, msg = buy_vip_with_stars(user_id)
+            answer_callback(callback['id'], msg, True)
+            if success:
+                send_message(chat_id, "🎉 **مبروك! أنت الآن مشترك VIP**\n\nتم ترقيتك واستمتع بالمميزات", main_keyboard(user_id))
+        
+        elif data == 'daily':
+            success, msg = daily_reward(user_id)
+            answer_callback(callback['id'], msg, True)
+            if success:
+                points = get_user_points(user_id)
+                send_message(chat_id, f"🎁 **المكافأة اليومية**\n\n{msg}\n💰 رصيدك الحالي: {points} نقطة", main_keyboard(user_id))
+        
+        elif data == 'weekly':
+            success, msg = weekly_reward(user_id)
+            answer_callback(callback['id'], msg, True)
+            if success:
+                points = get_user_points(user_id)
+                send_message(chat_id, f"🎊 **المكافأة الأسبوعية**\n\n{msg}\n💰 رصيدك الحالي: {points} نقطة", main_keyboard(user_id))
         
         elif data == 'upload_bot':
-            text = "📤 **رفع بوت جديد**\n\nأرسل ملف <code>.py</code> الخاص بالبوت:"
-            edit_message(chat_id, message_id, text, back_keyboard('back_main'))
+            allowed, msg = can_upload(user_id)
+            if not allowed:
+                answer_callback(callback['id'], msg, True)
+                return
+            edit_message(chat_id, message_id, "📤 **رفع بوت جديد**\n\nأرسل ملف <code>.py</code>", back_keyboard('back_main'))
         
         elif data == 'my_bots':
-            show_my_bots(chat_id, message_id, user_id)
+            bots = load_json(BOTS_DB)
+            user_bots = {bid: b for bid, b in bots.items() if b.get('user_id') == user_id}
+            if not user_bots:
+                edit_message(chat_id, message_id, "📁 **لا يوجد لديك بوتات**\n\nاضغط على 'رفع بوت' لرفع أول بوت لك", back_keyboard('back_main'))
+                return
+            keyboard = {'inline_keyboard': []}
+            for bid, b in user_bots.items():
+                status = "🟢" if b.get('status') == 'running' else "🔴"
+                name = b.get('name', 'بوت')[:25]
+                keyboard['inline_keyboard'].append([{'text': f'{status} {name}', 'callback_data': f'bot_{bid}'}])
+            keyboard['inline_keyboard'].append([{'text': '🔙 رجوع', 'callback_data': 'back_main'}])
+            edit_message(chat_id, message_id, f"📁 **بوتاتي** ({len(user_bots)})", keyboard)
         
         elif data.startswith('bot_'):
             bot_id = data.split('_')[1]
-            show_bot_panel(chat_id, message_id, user_id, bot_id)
+            bots = load_json(BOTS_DB)
+            bot_info = bots.get(bot_id, {})
+            is_running = bot_info.get('status') == 'running'
+            text = f"""🤖 **{bot_info.get('name', 'بوت')}**
+
+📅 الرفع: {bot_info.get('created_at', 'غير معروف')[:16]}
+🟢 الحالة: {'يعمل ✅' if is_running else 'متوقف ❌'}
+📁 الملف: {bot_info.get('filename', '')}"""
+            keyboard = {
+                'inline_keyboard': [
+                    [{'text': '⏹️ إيقاف' if is_running else '▶️ تشغيل', 'callback_data': f'startstop_{bot_id}'}],
+                    [{'text': '📋 سجلات', 'callback_data': f'logs_{bot_id}'}],
+                    [{'text': '🗑️ حذف', 'callback_data': f'delete_{bot_id}'}],
+                    [{'text': '🔙 رجوع', 'callback_data': 'my_bots'}]
+                ]
+            }
+            edit_message(chat_id, message_id, text, keyboard)
         
         elif data.startswith('startstop_'):
             bot_id = data.split('_')[1]
             bots = load_json(BOTS_DB)
-            if bot_id in bots:
-                if bots[bot_id].get('status') == 'running':
-                    stop_bot(bot_id)
-                    answer_callback(callback_id, "✅ تم إيقاف البوت")
-                else:
-                    success, msg = start_bot(bot_id)
-                    answer_callback(callback_id, msg)
-            show_bot_panel(chat_id, message_id, user_id, bot_id)
+            if bots.get(bot_id, {}).get('status') == 'running':
+                stop_bot(bot_id)
+                answer_callback(callback['id'], "✅ تم إيقاف البوت")
+            else:
+                success, msg = start_bot(bot_id)
+                answer_callback(callback['id'], msg)
+            bots = load_json(BOTS_DB)
+            bot_info = bots.get(bot_id, {})
+            is_running = bot_info.get('status') == 'running'
+            text = f"""🤖 **{bot_info.get('name', 'بوت')}**
+
+📅 الرفع: {bot_info.get('created_at', 'غير معروف')[:16]}
+🟢 الحالة: {'يعمل ✅' if is_running else 'متوقف ❌'}"""
+            keyboard = {
+                'inline_keyboard': [
+                    [{'text': '⏹️ إيقاف' if is_running else '▶️ تشغيل', 'callback_data': f'startstop_{bot_id}'}],
+                    [{'text': '📋 سجلات', 'callback_data': f'logs_{bot_id}'}],
+                    [{'text': '🗑️ حذف', 'callback_data': f'delete_{bot_id}'}],
+                    [{'text': '🔙 رجوع', 'callback_data': 'my_bots'}]
+                ]
+            }
+            edit_message(chat_id, message_id, text, keyboard)
         
         elif data.startswith('logs_'):
             bot_id = data.split('_')[1]
             logs = get_bot_logs(bot_id)
-            text = f"📋 **سجلات البوت**\n\n<code>{logs[:3500]}</code>"
+            text = f"📋 **سجلات البوت**\n\n<code>{logs[:3000]}</code>"
             edit_message(chat_id, message_id, text, back_keyboard(f'bot_{bot_id}'))
-        
-        elif data.startswith('download_'):
-            bot_id = data.split('_')[1]
-            bot_path = os.path.join(BOTS_DIR, f"{bot_id}.py")
-            if os.path.exists(bot_path):
-                send_document(chat_id, bot_path, f"📄 {bot_id}.py")
-                answer_callback(callback_id, "✅ جاري التحميل...")
-            else:
-                answer_callback(callback_id, "❌ الملف غير موجود", True)
-            show_bot_panel(chat_id, message_id, user_id, bot_id)
         
         elif data.startswith('delete_'):
             bot_id = data.split('_')[1]
             delete_bot(bot_id)
-            answer_callback(callback_id, "✅ تم حذف البوت")
-            show_my_bots(chat_id, message_id, user_id)
+            answer_callback(callback['id'], "✅ تم حذف البوت")
+            bots = load_json(BOTS_DB)
+            user_bots = {bid: b for bid, b in bots.items() if b.get('user_id') == user_id}
+            if not user_bots:
+                edit_message(chat_id, message_id, "📁 **لا يوجد لديك بوتات**", back_keyboard('back_main'))
+            else:
+                keyboard = {'inline_keyboard': []}
+                for bid, b in user_bots.items():
+                    status = "🟢" if b.get('status') == 'running' else "🔴"
+                    name = b.get('name', 'بوت')[:25]
+                    keyboard['inline_keyboard'].append([{'text': f'{status} {name}', 'callback_data': f'bot_{bid}'}])
+                keyboard['inline_keyboard'].append([{'text': '🔙 رجوع', 'callback_data': 'back_main'}])
+                edit_message(chat_id, message_id, f"📁 **بوتاتي** ({len(user_bots)})", keyboard)
         
         # ================== لوحة الأدمن ==================
         elif data == 'admin_panel' and is_admin(user_id):
             edit_message(chat_id, message_id, "⚙️ **لوحة التحكم**", admin_keyboard())
         
-        elif data == 'admin_users' and is_admin(user_id):
-            show_admin_users(chat_id, message_id)
-        
-        elif data.startswith('users_page_') and is_admin(user_id):
-            page = int(data.split('_')[2])
-            show_admin_users(chat_id, message_id, page)
-        
-        elif data.startswith('user_') and is_admin(user_id):
-            target_id = int(data.split('_')[1])
-            user = get_user(target_id)
-            if user:
-                text = f"""👤 **معلومات المستخدم**
-
-🆔 الايدي: <code>{target_id}</code>
-👤 الاسم: {user.get('first_name', '')}
-🔗 المعرف: @{user.get('username', 'لا يوجد')}
-💰 النقاط: {user.get('points', 0)}
-📁 البوتات: {len(user.get('bots', []))}
-🚫 الحظر: {'نعم ❌' if user.get('is_banned') else 'لا ✅'}"""
-                
-                keyboard = {
-                    'inline_keyboard': [
-                        [{'text': '💰 إضافة نقاط', 'callback_data': f'add_points_{target_id}'}],
-                        [{'text': '🚫 حظر' if not user.get('is_banned') else '✅ فك الحظر', 'callback_data': f'ban_{target_id}'}],
-                        [{'text': '🔙 رجوع', 'callback_data': 'admin_users'}]
-                    ]
-                }
-                edit_message(chat_id, message_id, text, keyboard)
-            else:
-                answer_callback(callback_id, "❌ المستخدم غير موجود", True)
-                show_admin_users(chat_id, message_id)
-        
-        elif data == 'admin_bots' and is_admin(user_id):
-            show_admin_bots(chat_id, message_id)
-        
-        elif data.startswith('bots_page_') and is_admin(user_id):
-            page = int(data.split('_')[2])
-            show_admin_bots(chat_id, message_id, page)
-        
-        elif data.startswith('admin_bot_') and is_admin(user_id):
-            bot_id = data.split('_')[2]
-            show_bot_panel(chat_id, message_id, user_id, bot_id)
-        
-        elif data == 'admin_pending' and is_admin(user_id):
-            text = "⏳ **الطلبات المعلقة**\n\nلا توجد طلبات حالياً"
-            edit_message(chat_id, message_id, text, back_keyboard('admin_panel'))
-        
-        elif data == 'admin_broadcast' and is_admin(user_id):
-            text = "📢 **إذاعة**\n\nأرسل الرسالة التي تريد إذاعتها لجميع المستخدمين:"
-            edit_message(chat_id, message_id, text, back_keyboard('admin_panel'))
-            # حفظ حالة الانتظار
-            pending = load_json(PENDING_DB)
-            pending[str(user_id)] = {'action': 'broadcast', 'step': 'waiting'}
-            save_json(PENDING_DB, pending)
-        
-        elif data == 'admin_settings' and is_admin(user_id):
-            settings = load_json(SETTINGS_DB)
-            text = f"""⚙️ **الإعدادات**
-
-🤖 اسم البوت: {settings.get('bot_name', '')}
-💰 النقاط لكل ساعة: {settings.get('points_per_hour', 1)}
-✅ الموافقة التلقائية: {'مفعّلة' if settings.get('auto_approve') else 'معطّلة'}"""
-            
+        elif data == 'admin_vip' and is_admin(user_id):
             keyboard = {
                 'inline_keyboard': [
-                    [{'text': '✏️ تغيير الاسم', 'callback_data': 'set_bot_name'}],
-                    [{'text': '💰 تغيير سعر الساعة', 'callback_data': 'set_points_per_hour'}],
-                    [{'text': '✅ الموافقة التلقائية', 'callback_data': 'toggle_auto_approve'}],
+                    [{'text': '➕ إضافة VIP', 'callback_data': 'add_vip_admin'}],
+                    [{'text': '➖ إزالة VIP', 'callback_data': 'remove_vip_admin'}],
+                    [{'text': '👑 قائمة VIP', 'callback_data': 'list_vip_admin'}],
                     [{'text': '🔙 رجوع', 'callback_data': 'admin_panel'}]
                 ]
             }
-            edit_message(chat_id, message_id, text, keyboard)
+            edit_message(chat_id, message_id, "👑 **إدارة VIP**", keyboard)
         
-        elif data.startswith('add_points_') and is_admin(user_id):
-            target_id = int(data.split('_')[2])
-            pending = load_json(PENDING_DB)
-            pending[str(user_id)] = {'action': 'add_points', 'target': target_id, 'step': 'waiting'}
-            save_json(PENDING_DB, pending)
-            text = f"💰 أرسل عدد النقاط للمستخدم <code>{target_id}</code>:"
-            edit_message(chat_id, message_id, text, back_keyboard('admin_users'))
+        elif data == 'add_vip_admin' and is_admin(user_id):
+            edit_message(chat_id, message_id, "➕ **إضافة VIP**\n\nأرسل ايدي المستخدم:", back_keyboard('admin_vip'))
         
-        elif data.startswith('ban_') and is_admin(user_id):
-            target_id = int(data.split('_')[1])
-            user = get_user(target_id)
-            if user:
-                user['is_banned'] = not user.get('is_banned', False)
-                save_user(target_id, user)
-                answer_callback(callback_id, f"✅ {'تم حظر' if user['is_banned'] else 'تم فك الحظر'} المستخدم")
-            show_admin_users(chat_id, message_id, 0)
+        elif data == 'remove_vip_admin' and is_admin(user_id):
+            edit_message(chat_id, message_id, "➖ **إزالة VIP**\n\nأرسل ايدي المستخدم:", back_keyboard('admin_vip'))
+        
+        elif data == 'list_vip_admin' and is_admin(user_id):
+            vip_data = get_vip_list()
+            if not vip_data:
+                text = "👑 **قائمة VIP**\n\nلا يوجد مشتركين VIP"
+            else:
+                text = "👑 **قائمة مشتركين VIP**\n\n"
+                for uid, info in vip_data.items():
+                    expiry = info.get('expiry', 'غير معروف')
+                    if expiry != 'lifetime':
+                        try:
+                            days = (datetime.fromisoformat(expiry) - datetime.now()).days
+                            expiry = f"{days} يوم متبقي"
+                        except:
+                            pass
+                    text += f"• <code>{uid}</code> - {expiry}\n"
+            edit_message(chat_id, message_id, text, back_keyboard('admin_vip'))
+        
+        elif data == 'admin_settings' and is_admin(user_id):
+            edit_message(chat_id, message_id, "⚙️ **إعدادات البوت**\n\nاختر الإعداد الذي تريد تعديله:", admin_settings_keyboard())
+        
+        # إعدادات البوت
+        elif data == 'set_bot_name' and is_admin(user_id):
+            edit_message(chat_id, message_id, "✏️ **تغيير اسم البوت**\n\nأرسل الاسم الجديد:", back_keyboard('admin_settings'))
+        
+        elif data == 'set_max_free_bots' and is_admin(user_id):
+            edit_message(chat_id, message_id, "📁 **تحديد حد البوتات المجانية**\n\nأرسل الرقم (مثال: 3):", back_keyboard('admin_settings'))
+        
+        elif data == 'set_daily_points' and is_admin(user_id):
+            edit_message(chat_id, message_id, "💰 **تحديد النقاط اليومية**\n\nأرسل الرقم (مثال: 10):", back_keyboard('admin_settings'))
+        
+        elif data == 'set_weekly_points' and is_admin(user_id):
+            edit_message(chat_id, message_id, "🎊 **تحديد النقاط الأسبوعية**\n\nأرسل الرقم (مثال: 20):", back_keyboard('admin_settings'))
+        
+        elif data == 'set_hour_price' and is_admin(user_id):
+            edit_message(chat_id, message_id, "⏱️ **تحديد سعر الساعة**\n\nأرسل الرقم (مثال: 1):", back_keyboard('admin_settings'))
+        
+        elif data == 'set_upload_price' and is_admin(user_id):
+            edit_message(chat_id, message_id, "📤 **تحديد سعر رفع البوت**\n\nأرسل الرقم (مثال: 5):", back_keyboard('admin_settings'))
+        
+        elif data == 'set_vip_stars_price' and is_admin(user_id):
+            edit_message(chat_id, message_id, "💎 **تحديد سعر VIP بالنجوم**\n\nأرسل الرقم (مثال: 100):", back_keyboard('admin_settings'))
+        
+        elif data == 'set_vip_duration' and is_admin(user_id):
+            edit_message(chat_id, message_id, "⏰ **تحديد مدة VIP بالأيام**\n\nأرسل الرقم (مثال: 30):", back_keyboard('admin_settings'))
+        
+        elif data == 'add_points_admin' and is_admin(user_id):
+            edit_message(chat_id, message_id, "💰 **إضافة نقاط**\n\nأرسل (ايدي المستخدم) (عدد النقاط)\nمثال: `8630079643 100`", back_keyboard('admin_panel'))
+        
+        elif data == 'admin_broadcast' and is_admin(user_id):
+            edit_message(chat_id, message_id, "📢 **إذاعة**\n\nأرسل الرسالة:", back_keyboard('admin_panel'))
+        
+        elif data == 'admin_users' and is_admin(user_id):
+            users = load_json(USERS_DB)
+            text = f"👥 **المستخدمين**\n\nالعدد: {len(users)}"
+            edit_message(chat_id, message_id, text, back_keyboard('admin_panel'))
+        
+        elif data == 'admin_bots' and is_admin(user_id):
+            bots = load_json(BOTS_DB)
+            text = f"📁 **جميع البوتات**\n\nالعدد: {len(bots)}"
+            edit_message(chat_id, message_id, text, back_keyboard('admin_panel'))
+        
+        elif data == 'force_check':
+            if check_force_subscribe(user_id):
+                send_message(chat_id, "✅ **تم التحقق من اشتراكك**\n\nمرحباً بك في البوت", main_keyboard(user_id))
+            else:
+                settings = load_json(SETTINGS_DB)
+                text = f"❌ **لم تشترك بعد**\n\nيرجى الاشتراك في القناة:\n{settings.get('channel_link', CHANNEL_LINK)}"
+                keyboard = {'inline_keyboard': [[{'text': '📢 اشترك الآن', 'url': settings.get('channel_link', CHANNEL_LINK)}], [{'text': '✅ تحقق مجدداً', 'callback_data': 'force_check'}]]}
+                edit_message(chat_id, message_id, text, keyboard)
+        
+        else:
+            answer_callback(callback['id'], "⚠️ جاري التطوير", True)
     
     return 'OK', 200
 
-# ================== التوكنات المؤقتة ==================
-pending_messages = {}
-waiting_for_reply = {}
-
-def process_pending_messages():
-    while True:
-        time.sleep(1)
-        # المعالجة تتم في الويب هوك مباشرة
-
-# ================== مراقبة البوتات ==================
-def monitor_bots():
-    while True:
-        time.sleep(30)
-        bots = load_json(BOTS_DB)
-        settings = load_json(SETTINGS_DB)
-        points_per_hour = settings.get('points_per_hour', 1)
+# ================== معالجة الرسائل النصية للإعدادات ==================
+@flask_app.route(f'/webhook/{TOKEN}', methods=['POST'])
+def handle_messages():
+    update = request.get_json()
+    if not update:
+        return 'OK', 200
+    
+    if 'message' in update and 'text' in update['message']:
+        msg = update['message']
+        chat_id = msg['chat']['id']
+        user_id = msg['from']['id']
+        text = msg['text']
         
-        for bid, b in bots.items():
-            # التحقق من أن البوت لا يزال يعمل
-            if b.get('pid'):
-                try:
-                    os.kill(b['pid'], 0)
-                except OSError:
-                    b['status'] = 'stopped'
-                    b['pid'] = None
-                    save_json(BOTS_DB, bots)
+        # معالجة إعدادات الأدمن
+        if is_admin(user_id):
+            settings = load_json(SETTINGS_DB)
+            pending_setting = load_json(os.path.join(DB_DIR, 'pending_admin.json'))
             
-            # خصم النقاط كل ساعة للمستخدمين العاديين
-            if b.get('status') == 'running' and not is_admin(b.get('user_id')):
-                user = get_user(b.get('user_id'))
-                if user:
-                    # التحقق من وجود نقاط كافية
-                    if user.get('points', 0) < points_per_hour:
-                        stop_bot(bid)
-                        send_message(b.get('user_id'), f"⚠️ **تم إيقاف البوت {b.get('name')}**\n\nلا يوجد نقاط كافية للاستمرار")
+            if pending_setting.get(str(user_id)):
+                action = pending_setting[str(user_id)]
+                try:
+                    value = int(text)
+                    
+                    if action == 'set_bot_name':
+                        settings['bot_name'] = text
+                        save_json(SETTINGS_DB, settings)
+                        send_message(chat_id, f"✅ تم تغيير اسم البوت إلى: {text}")
+                    
+                    elif action == 'set_max_free_bots':
+                        settings['max_free_bots'] = value
+                        save_json(SETTINGS_DB, settings)
+                        send_message(chat_id, f"✅ تم تغيير حد البوتات المجانية إلى: {value}")
+                    
+                    elif action == 'set_daily_points':
+                        settings['daily_points'] = value
+                        save_json(SETTINGS_DB, settings)
+                        send_message(chat_id, f"✅ تم تغيير النقاط اليومية إلى: {value}")
+                    
+                    elif action == 'set_weekly_points':
+                        settings['weekly_bonus_points'] = value
+                        save_json(SETTINGS_DB, settings)
+                        send_message(chat_id, f"✅ تم تغيير النقاط الأسبوعية إلى: {value}")
+                    
+                    elif action == 'set_hour_price':
+                        settings['bot_price_per_hour'] = value
+                        save_json(SETTINGS_DB, settings)
+                        send_message(chat_id, f"✅ تم تغيير سعر الساعة إلى: {value} نقطة")
+                    
+                    elif action == 'set_upload_price':
+                        settings['hosting_price_per_bot'] = value
+                        save_json(SETTINGS_DB, settings)
+                        send_message(chat_id, f"✅ تم تغيير سعر رفع البوت إلى: {value} نقطة")
+                    
+                    elif action == 'set_vip_stars_price':
+                        settings['vip_stars_price'] = value
+                        save_json(SETTINGS_DB, settings)
+                        send_message(chat_id, f"✅ تم تغيير سعر VIP إلى: {value} نجمة")
+                    
+                    elif action == 'set_vip_duration':
+                        settings['vip_duration_days'] = value
+                        save_json(SETTINGS_DB, settings)
+                        send_message(chat_id, f"✅ تم تغيير مدة VIP إلى: {value} يوم")
+                    
+                    elif action == 'add_points':
+                        parts = text.split()
+                        if len(parts) == 2:
+                            target_id = int(parts[0])
+                            points = int(parts[1])
+                            add_points(target_id, points)
+                            send_message(chat_id, f"✅ تم إضافة {points} نقطة للمستخدم {target_id}")
+                        else:
+                            send_message(chat_id, "❌ الصيغة غير صحيحة\nاستخدم: `ايدي المستخدم عدد النقاط`")
+                    
+                    elif action == 'broadcast':
+                        users = load_json(USERS_DB)
+                        success = 0
+                        for uid in users.keys():
+                            try:
+                                send_message(int(uid), text)
+                                success += 1
+                            except:
+                                pass
+                        send_message(chat_id, f"✅ تم الإذاعة\nتم الإرسال لـ {success} مستخدم")
+                    
+                    elif action == 'add_vip':
+                        add_vip(int(text), settings.get('vip_duration_days', 30))
+                        send_message(chat_id, f"✅ تم ترقية {text} إلى VIP")
+                    
+                    elif action == 'remove_vip':
+                        remove_vip(int(text))
+                        send_message(chat_id, f"✅ تم إزالة VIP من {text}")
+                    
+                    # حذف الحالة
+                    pending_setting.pop(str(user_id))
+                    save_json(os.path.join(DB_DIR, 'pending_admin.json'), pending_setting)
+                    
+                except ValueError:
+                    if action in ['set_bot_name', 'broadcast']:
+                        if action == 'set_bot_name':
+                            settings['bot_name'] = text
+                            save_json(SETTINGS_DB, settings)
+                            send_message(chat_id, f"✅ تم تغيير اسم البوت إلى: {text}")
+                        elif action == 'broadcast':
+                            users = load_json(USERS_DB)
+                            success = 0
+                            for uid in users.keys():
+                                try:
+                                    send_message(int(uid), text)
+                                    success += 1
+                                except:
+                                    pass
+                            send_message(chat_id, f"✅ تم الإذاعة\nتم الإرسال لـ {success} مستخدم")
+                        
+                        pending_setting.pop(str(user_id))
+                        save_json(os.path.join(DB_DIR, 'pending_admin.json'), pending_setting)
                     else:
-                        # خصم نقطة كل ساعة (يتم في دالة منفصلة)
-                        pass
-
-# تشغيل المراقبة في خلفية
-threading.Thread(target=monitor_bots, daemon=True).start()
+                        send_message(chat_id, "❌ الرجاء إرسال رقم صحيح")
+    
+    return 'OK', 200
 
 # ================== تشغيل الخادم ==================
 if __name__ == '__main__':
     # تعيين الويب هوك
-    if WEBHOOK_URL:
-        webhook_url = f"https://{WEBHOOK_URL}/webhook/{TOKEN}"
-    else:
-        # للاستخدام المحلي أو Render
-        port = int(os.environ.get('PORT', 8080))
-        webhook_url = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME', 'localhost')}/webhook/{TOKEN}"
-    
-    # تعيين الويب هوك
+    webhook_url = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME', 'localhost')}/webhook/{TOKEN}"
     try:
         requests.get(f"https://api.telegram.org/bot{TOKEN}/setWebhook?url={webhook_url}")
         print(f"✅ تم تعيين Webhook: {webhook_url}")
@@ -779,12 +909,21 @@ if __name__ == '__main__':
         print(f"⚠️ خطأ في تعيين Webhook: {e}")
     
     print("=" * 50)
-    print("🚀 بوت الاستضافة يعمل الآن")
+    print("🚀 بوت الاستضافة مع نظام VIP ونقاط متكامل")
     print("=" * 50)
-    print(f"✅ التوكن: {TOKEN[:10]}...")
-    print(f"👑 الأدمن: {ADMIN_ID}")
-    print(f"🌐 المنفذ: {os.environ.get('PORT', 8080)}")
+    print(f"👑 المالك: {OWNER_USERNAME}")
+    print(f"📢 القناة: {CHANNEL_LINK}")
+    print(f"✅ التوكن: {TOKEN[:15]}...")
+    print("=" * 50)
+    print("\n📋 الإعدادات الحالية:")
+    settings = load_json(SETTINGS_DB)
+    print(f"   📁 حد البوتات المجانية: {settings.get('max_free_bots', 3)}")
+    print(f"   💰 النقاط اليومية: {settings.get('daily_points', 10)}")
+    print(f"   🎊 النقاط الأسبوعية: {settings.get('weekly_bonus_points', 20)}")
+    print(f"   ⏱️ سعر الساعة: {settings.get('bot_price_per_hour', 1)} نقطة")
+    print(f"   📤 سعر رفع البوت: {settings.get('hosting_price_per_bot', 5)} نقطة")
+    print(f"   💎 سعر VIP: {settings.get('vip_stars_price', 100)} نجمة")
+    print(f"   ⏰ مدة VIP: {settings.get('vip_duration_days', 30)} يوم")
     print("=" * 50)
     
-    # تشغيل الخادم
     flask_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
