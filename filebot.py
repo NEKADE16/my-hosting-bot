@@ -16,7 +16,7 @@ import requests
 
 # ================== التوكنات والإعدادات ==================
 TOKEN = "8560610744:AAG3NdWF1XFacM9CFwrn7pzppO3LXDz_HxA"
-ADMIN_ID = 8630079643
+ADMIN_ID = 8630079643  # تم التصحيح
 OWNER_USERNAME = "@h7_4c"
 CHANNEL_LINK = "https://t.me/ArabPyDecode"
 CHANNEL_USERNAME = "ArabPyDecode"
@@ -498,7 +498,8 @@ def main_keyboard(user_id):
     vip_status = "👑 VIP" if is_vip(user_id) else "🆓 عادي"
     running_bots = get_running_bots_count(user_id)
     settings = load_json(SETTINGS_FILE)
-    return {
+    
+    keyboard = {
         'inline_keyboard': [
             [{'text': f'💰 نقاطك: {points}', 'callback_data': 'balance'}],
             [{'text': f'{vip_status} | 🟢 {running_bots} بوت شغال', 'callback_data': 'vip_info'}],
@@ -511,6 +512,10 @@ def main_keyboard(user_id):
             [{'text': '👤 المالك', 'url': f"tg://user?id={ADMIN_ID}"}]
         ]
     }
+    # إضافة زر الأدمن للمستخدم الذي ايديه ADMIN_ID
+    if is_admin(user_id):
+        keyboard['inline_keyboard'].append([{'text': '⚙️ لوحة الإدارة', 'callback_data': 'admin_panel'}])
+    return keyboard
 
 def admin_keyboard():
     running_bots_count = len(get_all_running_bots())
@@ -593,9 +598,11 @@ def webhook():
                         if len(parts) == 2:
                             try:
                                 add_points(int(parts[0]), int(parts[1]))
-                                send_message(chat_id, f"✅ تم إضافة {parts[1]} نقطة")
+                                send_message(chat_id, f"✅ تم إضافة {parts[1]} نقطة للمستخدم {parts[0]}")
                             except:
-                                send_message(chat_id, "❌ خطأ")
+                                send_message(chat_id, "❌ خطأ في الإدخال")
+                        else:
+                            send_message(chat_id, "❌ استخدم: ايدي المستخدم عدد النقاط")
                     elif action == 'broadcast':
                         users = load_json(USERS_FILE)
                         success = 0
@@ -611,13 +618,13 @@ def webhook():
                             add_vip(int(text))
                             send_message(chat_id, f"✅ تم ترقية {text} VIP")
                         except:
-                            send_message(chat_id, "❌ خطأ")
+                            send_message(chat_id, "❌ خطأ في الإدخال")
                     elif action == 'remove_vip':
                         try:
                             remove_vip(int(text))
                             send_message(chat_id, f"✅ تم إزالة VIP من {text}")
                         except:
-                            send_message(chat_id, "❌ خطأ")
+                            send_message(chat_id, "❌ خطأ في الإدخال")
                     del pending[str(user_id)]
                     save_json(PENDING_FILE, pending)
                     return 'OK', 200
@@ -827,7 +834,7 @@ def webhook():
             keyboard['inline_keyboard'].append([{'text': '🔙 رجوع', 'callback_data': 'admin_panel'}])
             edit_message(chat_id, msg_id, f"🟢 البوتات الشغالة ({len(running_bots)})", keyboard)
         
-        elif data == 'admin_bot_' and is_admin(user_id):
+        elif data.startswith('admin_bot_') and is_admin(user_id):
             bot_id = data.split('_')[2]
             bot_info = load_json(BOTS_FILE).get(bot_id, {})
             is_running = bot_info.get('status') == 'running'
@@ -1024,6 +1031,7 @@ if __name__ == '__main__':
     print("🚀 بوت الاستضافة يعمل")
     print(f"👑 المالك: {OWNER_USERNAME}")
     print(f"📢 القناة: {CHANNEL_LINK}")
+    print(f"🆔 ايدي الأدمن: {ADMIN_ID}")
     print("=" * 50)
     
     flask_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
