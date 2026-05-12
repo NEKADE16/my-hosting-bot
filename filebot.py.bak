@@ -19,7 +19,7 @@ import requests
 
 # ================== التوكن والإعدادات ==================
 # جلب التوكن من متغيرات البيئة (للأمان)
-TOKEN = os.environ.get('BOT_TOKEN', '8697498430:AAGK9WfWUhELT4734I9Q6JjNiGjNsWsz768')
+TOKEN = os.environ.get('BOT_TOKEN', '8502642404:AAGoKelLs33_pp50pVlW_IPdpP0G3BqEfvA')
 ADMIN_ID = int(os.environ.get('ADMIN_ID', '8630079643'))
 WEBHOOK_URL = os.environ.get('RENDER_EXTERNAL_HOSTNAME', '')
 
