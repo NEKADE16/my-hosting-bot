@@ -16,7 +16,7 @@ import requests
 
 # ================== التوكنات والإعدادات ==================
 TOKEN = "8560610744:AAG3NdWF1XFacM9CFwrn7pzppO3LXDz_HxA"
-ADMIN_ID = 8630079643  # تم التصحيح
+ADMIN_ID = 8630079643
 OWNER_USERNAME = "@h7_4c"
 CHANNEL_LINK = "https://t.me/ArabPyDecode"
 CHANNEL_USERNAME = "ArabPyDecode"
@@ -362,10 +362,11 @@ def stop_bot(bot_id):
             os.kill(pid, 9)
         except:
             pass
-        bots[bot_id]['pid'] = None
-        bots[bot_id]['status'] = 'stopped'
-        save_json(BOTS_FILE, bots)
-        sync_all_to_github()
+    bots[bot_id]['pid'] = None
+    bots[bot_id]['status'] = 'stopped'
+    bots[bot_id]['started_at'] = None
+    save_json(BOTS_FILE, bots)
+    sync_all_to_github()
     return True
 
 def start_bot(bot_id):
@@ -386,15 +387,20 @@ def start_bot(bot_id):
     log_path = os.path.join(LOGS_DIR, f"{bot_id}.log")
     try:
         with open(log_path, 'a') as log:
-            proc = subprocess.Popen([sys.executable, bot_path], stdout=log, stderr=log, start_new_session=True)
+            proc = subprocess.Popen([sys.executable, bot_path], stdout=log, stderr=log, start_new_session=True, cwd=BOTS_DIR)
+            time.sleep(1.5)
+            if proc.poll() is not None:
+                with open(log_path, 'r') as f:
+                    error_msg = f.read()[-500:]
+                return False, f"❌ فشل التشغيل:\n{error_msg[:200]}"
             bots[bot_id]['pid'] = proc.pid
             bots[bot_id]['status'] = 'running'
             bots[bot_id]['started_at'] = datetime.now().isoformat()
             save_json(BOTS_FILE, bots)
             sync_all_to_github()
             return True, "✅ تم التشغيل"
-    except:
-        return False, "❌ فشل التشغيل"
+    except Exception as e:
+        return False, f"❌ فشل التشغيل: {str(e)[:50]}"
 
 def save_bot_file(file_id, user_id, filename):
     url = f"https://api.telegram.org/bot{TOKEN}/getFile"
@@ -433,7 +439,42 @@ def save_bot_file(file_id, user_id, filename):
         users[str(user_id)]['bots'].append(bot_id)
         save_json(USERS_FILE, users)
     sync_all_to_github()
-    return bot_id, f"✅ تم رفع {filename}"
+    
+    # ✅ التشغيل التلقائي بعد الرفع
+    success, msg = start_bot(bot_id)
+    if success:
+        return bot_id, f"✅ تم رفع وتشغيل {filename} بنجاح"
+    else:
+        return bot_id, f"✅ تم رفع {filename} لكن فشل التشغيل: {msg}"
+
+def delete_user_account(username_or_id):
+    """حذف مستخدم بالكامل مع جميع بوتاته"""
+    users = load_json(USERS_FILE)
+    user_id = None
+    
+    # البحث عن المستخدم بالاسم أو الايدي
+    for uid, data in users.items():
+        if data.get('username') == username_or_id or uid == str(username_or_id):
+            user_id = uid
+            break
+    
+    if not user_id or user_id == str(ADMIN_ID):
+        return False, "❌ لا يمكن حذف الأدمن الرئيسي أو المستخدم غير موجود"
+    
+    # حذف جميع بوتات المستخدم
+    user_bots = get_user_bots_list(int(user_id))
+    for bot_id in user_bots:
+        delete_bot(bot_id)
+    
+    # حذف المستخدم من VIP
+    remove_vip(int(user_id))
+    
+    # حذف المستخدم من الملفات
+    del users[user_id]
+    save_json(USERS_FILE, users)
+    
+    sync_all_to_github()
+    return True, f"✅ تم حذف المستخدم {username_or_id} وجميع بوتاته"
 
 def get_bot_logs(bot_id, lines=50):
     log_path = os.path.join(LOGS_DIR, f"{bot_id}.log")
@@ -512,7 +553,6 @@ def main_keyboard(user_id):
             [{'text': '👤 المالك', 'url': f"tg://user?id={ADMIN_ID}"}]
         ]
     }
-    # إضافة زر الأدمن للمستخدم الذي ايديه ADMIN_ID
     if is_admin(user_id):
         keyboard['inline_keyboard'].append([{'text': '⚙️ لوحة الإدارة', 'callback_data': 'admin_panel'}])
     return keyboard
@@ -528,7 +568,8 @@ def admin_keyboard():
             [{'text': '💰 إضافة نقاط', 'callback_data': 'add_points_admin'}],
             [{'text': '📢 إذاعة', 'callback_data': 'admin_broadcast'}],
             [{'text': '⚙️ إعدادات', 'callback_data': 'admin_settings'}],
-            [{'text': '🗑️ حذف محادثات المستخدمين', 'callback_data': 'clear_chats'}],
+            [{'text': '🗑️ حذف مستخدم', 'callback_data': 'delete_user_admin'}],
+            [{'text': '🗑️ حذف محادثات', 'callback_data': 'clear_chats'}],
             [{'text': '🔙 رجوع', 'callback_data': 'back_main'}]
         ]
     }
@@ -569,7 +610,16 @@ def webhook():
                 pending = load_json(PENDING_FILE)
                 if str(user_id) in pending:
                     action = pending[str(user_id)]
-                    if action.startswith('set_'):
+                    
+                    # ✅ معالجة حذف المستخدم
+                    if action == 'delete_user':
+                        success, msg_result = delete_user_account(text.strip())
+                        send_message(chat_id, msg_result)
+                        del pending[str(user_id)]
+                        save_json(PENDING_FILE, pending)
+                        return 'OK', 200
+                    
+                    elif action.startswith('set_'):
                         try:
                             settings = load_json(SETTINGS_FILE)
                             if action == 'set_bot_name':
@@ -647,7 +697,7 @@ def webhook():
             if doc['file_name'].endswith('.py'):
                 result, msg_text = save_bot_file(doc['file_id'], user_id, doc['file_name'])
                 if result:
-                    send_message(chat_id, f"✅ {msg_text}\nايدي البوت: `{result}`")
+                    send_message(chat_id, f"✅ {msg_text}\n🆔 ايدي البوت: `{result}`")
                 else:
                     send_message(chat_id, f"❌ {msg_text}")
             else:
@@ -954,7 +1004,12 @@ def webhook():
             save_json(PENDING_FILE, pending)
             edit_message(chat_id, msg_id, f"✏️ أرسل القيمة الجديدة", back_keyboard('admin_settings'))
         
-        # ================== حذف المحادثات ==================
+        elif data == 'delete_user_admin' and is_admin(user_id):
+            edit_message(chat_id, msg_id, "🗑️ **حذف مستخدم**\n\nأرسل معرف المستخدم (ID) أو اسم المستخدم:", back_keyboard('admin_panel'))
+            pending = load_json(PENDING_FILE)
+            pending[str(user_id)] = 'delete_user'
+            save_json(PENDING_FILE, pending)
+        
         elif data == 'clear_chats' and is_admin(user_id):
             confirm_keyboard = {
                 'inline_keyboard': [
